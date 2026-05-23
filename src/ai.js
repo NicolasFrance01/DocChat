@@ -37,66 +37,56 @@ async function embedChunks(chunks) {
   return results;
 }
 
-// ─── RAG: embed → search → answer ────────────────────────────────────────────
+// ─── System prompts ───────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `Eres un asistente especializado en analizar documentos.
-Tu tarea es responder preguntas basándote EXCLUSIVAMENTE en los fragmentos de documentos proporcionados.
+const SYSTEM_PROMPT_RAG = `Eres un asistente inteligente. Tenés acceso a fragmentos de documentos del usuario.
 
 Reglas:
-- Si la respuesta está en los fragmentos, responde con detalle y cita el documento.
-- Si no está en los fragmentos, di claramente: "No encontré información sobre eso en los documentos cargados."
-- Cuando cites información, menciona el nombre del documento y, si está disponible, el número de página.
-- Responde siempre en el mismo idioma que la pregunta del usuario.
+- Respondé principalmente usando los fragmentos proporcionados.
+- Si la respuesta está en los fragmentos, citá el documento y la página si está disponible.
+- Si la pregunta es general o no tiene que ver con los documentos, respondé igual con tu conocimiento.
+- Respondé siempre en el mismo idioma que la pregunta del usuario.
 - Sé conciso pero completo.`;
 
-async function chat({ notebookId, conversationId, userMessage, history = [] }) {
-  // 1. Embed the user's question
-  const queryEmbedding = await embedText(userMessage);
+const SYSTEM_PROMPT_FREE = `Eres un asistente inteligente y conversacional.
+Respondé siempre en el mismo idioma que el usuario. Sé conciso pero completo.`;
 
-  // 2. Retrieve top-5 relevant chunks
-  const relevantChunks = await db.searchChunks(notebookId, queryEmbedding, 5);
-
-  if (relevantChunks.length === 0) {
-    return {
-      answer: 'No hay documentos cargados en este notebook, o aún no tienen embeddings. Por favor, sube un documento primero.',
-      sources: [],
-    };
-  }
-
-  // 3. Build context block from chunks
+function buildUserContent(userMessage, relevantChunks) {
+  if (relevantChunks.length === 0) return userMessage;
   const contextBlock = relevantChunks
     .map((c, i) => {
       const pageInfo = c.page_number ? ` (página ${c.page_number})` : '';
       return `[Fragmento ${i + 1} — ${c.document_name}${pageInfo}]\n${c.content}`;
     })
     .join('\n\n---\n\n');
+  return `FRAGMENTOS RELEVANTES DE LOS DOCUMENTOS:\n\n${contextBlock}\n\n---\n\nPregunta: ${userMessage}`;
+}
 
-  // 4. Build messages array: system + history (last 6 exchanges) + context + question
-  const recentHistory = history.slice(-12); // max 6 user+assistant pairs
-  const messages = [
-    {
-      role: 'user',
-      content: `FRAGMENTOS RELEVANTES DE LOS DOCUMENTOS:\n\n${contextBlock}\n\n---\n\nPregunta: ${userMessage}`,
-    },
-  ];
+async function chat({ notebookId, userMessage, history = [] }) {
+  const recentHistory = history.slice(-12);
 
-  // Interleave history before the current message
-  const fullMessages = [
-    ...recentHistory.map(m => ({ role: m.role, content: m.content })),
-    messages[0],
-  ];
+  // Try RAG only if there are documents with embeddings
+  let relevantChunks = [];
+  try {
+    const queryEmbedding = await embedText(userMessage);
+    relevantChunks = await db.searchChunks(notebookId, queryEmbedding, 5);
+  } catch { /* no embeddings available — fall through to free mode */ }
 
-  // 5. Call Groq Llama 3.3 70B
+  const systemPrompt = relevantChunks.length > 0 ? SYSTEM_PROMPT_RAG : SYSTEM_PROMPT_FREE;
+  const userContent = buildUserContent(userMessage, relevantChunks);
+
   const completion = await getGroq().chat.completions.create({
     model: 'llama-3.3-70b-versatile',
-    messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...fullMessages],
-    temperature: 0.3,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      ...recentHistory.map(m => ({ role: m.role, content: m.content })),
+      { role: 'user', content: userContent },
+    ],
+    temperature: 0.5,
     max_tokens: 1024,
   });
 
   const answer = completion.choices[0].message.content.trim();
-
-  // 6. Build sources list for storage
   const sources = relevantChunks.map(c => ({
     chunk_id: c.id,
     document_name: c.document_name,
@@ -111,36 +101,25 @@ async function chat({ notebookId, conversationId, userMessage, history = [] }) {
 // ─── Streaming version (SSE) ──────────────────────────────────────────────────
 
 async function chatStream({ notebookId, userMessage, history = [], onChunk, onDone }) {
-  const queryEmbedding = await embedText(userMessage);
-  const relevantChunks = await db.searchChunks(notebookId, queryEmbedding, 5);
-
-  if (relevantChunks.length === 0) {
-    onChunk('No hay documentos cargados en este notebook. Por favor, sube un documento primero.');
-    onDone([], '');
-    return;
-  }
-
-  const contextBlock = relevantChunks
-    .map((c, i) => {
-      const pageInfo = c.page_number ? ` (página ${c.page_number})` : '';
-      return `[Fragmento ${i + 1} — ${c.document_name}${pageInfo}]\n${c.content}`;
-    })
-    .join('\n\n---\n\n');
-
   const recentHistory = history.slice(-12);
-  const currentMessage = {
-    role: 'user',
-    content: `FRAGMENTOS RELEVANTES DE LOS DOCUMENTOS:\n\n${contextBlock}\n\n---\n\nPregunta: ${userMessage}`,
-  };
+
+  let relevantChunks = [];
+  try {
+    const queryEmbedding = await embedText(userMessage);
+    relevantChunks = await db.searchChunks(notebookId, queryEmbedding, 5);
+  } catch { /* fall through to free mode */ }
+
+  const systemPrompt = relevantChunks.length > 0 ? SYSTEM_PROMPT_RAG : SYSTEM_PROMPT_FREE;
+  const userContent = buildUserContent(userMessage, relevantChunks);
 
   const stream = await getGroq().chat.completions.create({
     model: 'llama-3.3-70b-versatile',
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
       ...recentHistory.map(m => ({ role: m.role, content: m.content })),
-      currentMessage,
+      { role: 'user', content: userContent },
     ],
-    temperature: 0.3,
+    temperature: 0.5,
     max_tokens: 1024,
     stream: true,
   });
