@@ -20,7 +20,7 @@ function getGemini() {
 // ─── Embeddings (Gemini text-embedding-004, 768 dims) ─────────────────────────
 
 async function embedText(text) {
-  const model = getGemini().getGenerativeModel({ model: 'text-embedding-004' });
+  const model = getGemini().getGenerativeModel({ model: 'embedding-001' });
   // Truncate to ~8000 chars to stay within token limits
   const truncated = text.slice(0, 8000);
   const result = await model.embedContent(truncated);
