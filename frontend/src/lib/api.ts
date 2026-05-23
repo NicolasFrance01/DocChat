@@ -95,7 +95,9 @@ export async function uploadDocument(notebookId: number, file: File, onProgress?
     const form = new FormData();
     form.append('file', file);
 
-    xhr.open('POST', `${BASE}/api/notebooks/${notebookId}/documents`);
+    // Upload goes to Vercel API route — extracts text there, sends only text to Render
+    // This avoids OOM on Render free tier (512MB RAM)
+    xhr.open('POST', `/api/ingest/${notebookId}`);
     if (t) xhr.setRequestHeader('X-Session-Token', t);
     xhr.send(form);
   });

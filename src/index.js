@@ -11,7 +11,7 @@ const fs = require('fs');
 const os = require('os');
 
 const db = require('./db');
-const { ingestFile, ingestUrl, detectType } = require('./ingest');
+const { ingestFile, ingestUrl, detectType, chunkText } = require('./ingest');
 const { embedChunks, chatStream } = require('./ai');
 
 const app = express();
@@ -178,6 +178,27 @@ app.post('/api/notebooks/:id/documents/url', requireAuth, async (req, res) => {
     embedAndStore(doc.id, chunks).catch(err => console.error('[ingest:embed:url]', err));
   } catch (err) {
     console.error('[documents:url]', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'Error interno' });
+  }
+});
+
+// Receive pre-extracted text from Vercel (no file in memory on Render)
+app.post('/api/notebooks/:id/documents/text', requireAuth, async (req, res) => {
+  try {
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    const { name, type, source, text } = req.body;
+    if (!name || !type || !text) return res.status(400).json({ error: 'Faltan campos: name, type, text' });
+    if (text.trim().length === 0) return res.status(422).json({ error: 'El documento no contiene texto extraíble' });
+
+    const doc = await db.createDocument(notebook.id, name, type, source || name, text);
+    res.status(202).json({ document: doc, message: 'Procesando embeddings en segundo plano…' });
+
+    const chunks = chunkText(text);
+    embedAndStore(doc.id, chunks).catch(err => console.error('[ingest:text]', err));
+  } catch (err) {
+    console.error('[documents:text]', err);
     if (!res.headersSent) res.status(500).json({ error: err.message || 'Error interno' });
   }
 });
