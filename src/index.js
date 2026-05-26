@@ -12,7 +12,7 @@ const os = require('os');
 
 const db = require('./db');
 const { ingestFile, ingestUrl, detectType, chunkText } = require('./ingest');
-const { embedChunks, chatStream } = require('./ai');
+const { embedText, chatStream } = require('./ai');
 
 const app = express();
 app.use(express.json());
@@ -219,19 +219,33 @@ app.delete('/api/documents/:id', requireAuth, async (req, res) => {
   }
 });
 
-// Background: embed chunks and persist
+// Background: embed chunks and persist in batches of 20 to prevent Render OOM
 async function embedAndStore(documentId, rawChunks) {
-  const chunksWithEmbeddings = await embedChunks(rawChunks);
-  const rows = chunksWithEmbeddings.map(c => ({
-    documentId,
-    content: c.content,
-    embedding: c.embedding,
-    chunkIndex: c.chunkIndex,
-    pageNumber: c.pageNumber ?? null,
-  }));
-  await db.insertChunks(rows);
-  await db.updateDocumentChunkCount(documentId, rows.length);
-  console.log(`[ingest] Document ${documentId}: ${rows.length} chunks stored`);
+  const BATCH_SIZE = 20;
+  let storedCount = 0;
+
+  for (let i = 0; i < rawChunks.length; i += BATCH_SIZE) {
+    const batch = rawChunks.slice(i, i + BATCH_SIZE);
+    const rows = [];
+
+    for (const chunk of batch) {
+      const embedding = await embedText(chunk.content);
+      rows.push({
+        documentId,
+        content: chunk.content,
+        embedding: embedding,
+        chunkIndex: chunk.chunkIndex,
+        pageNumber: chunk.pageNumber ?? null,
+      });
+    }
+
+    await db.insertChunks(rows);
+    storedCount += rows.length;
+    console.log(`[ingest] Document ${documentId}: batch processed (${storedCount}/${rawChunks.length} chunks)`);
+  }
+
+  await db.updateDocumentChunkCount(documentId, storedCount);
+  console.log(`[ingest] Document ${documentId}: total ${storedCount} chunks stored`);
 }
 
 // ─── Conversations ────────────────────────────────────────────────────────────
