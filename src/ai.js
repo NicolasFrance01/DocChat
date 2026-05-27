@@ -16,7 +16,7 @@ async function embedText(text) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY no configurada');
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${apiKey}`;
   const truncated = text.slice(0, 8000);
 
   const res = await fetch(url, {
@@ -25,6 +25,7 @@ async function embedText(text) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
+      model: "models/text-embedding-004",
       content: {
         parts: [{ text: truncated }]
       }
