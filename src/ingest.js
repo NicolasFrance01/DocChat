@@ -73,8 +73,10 @@ function chunkText(text) {
       end = text.length;
     }
 
-    const content = text.slice(start, end).trim();
-    if (content.length > 0) {
+    const sliced = text.slice(start, end).trim();
+    if (sliced.length > 0) {
+      // Force V8 to decouple from the parent large string to prevent memory leaks (SlicedString)
+      const content = (' ' + sliced).slice(1);
       chunks.push({ content, chunkIndex: chunks.length });
     }
 
