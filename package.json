@@ -4,7 +4,7 @@
   "description": "Chat with your documents — self-hosted NotebookLM",
   "main": "src/index.js",
   "scripts": {
-    "start": "node --max-old-space-size=450 src/index.js",
+    "start": "node --max-old-space-size=300 src/index.js",
     "dev": "node --watch src/index.js"
   },
   "dependencies": {

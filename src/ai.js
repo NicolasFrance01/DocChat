@@ -1,38 +1,47 @@
 'use strict';
 
 const Groq = require('groq-sdk');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const db = require('./db');
 
 let groq;
-let genAI;
 
 function getGroq() {
   if (!groq) groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
   return groq;
 }
 
-function getGemini() {
-  if (!genAI) genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  return genAI;
-}
-
 // ─── Embeddings (Gemini text-embedding-004, 768 dims) ─────────────────────────
 
-let embeddingModel;
-function getEmbeddingModel() {
-  if (!embeddingModel) {
-    embeddingModel = getGemini().getGenerativeModel({ model: 'embedding-001' });
-  }
-  return embeddingModel;
-}
-
 async function embedText(text) {
-  const model = getEmbeddingModel();
-  // Truncate to ~8000 chars to stay within token limits
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY no configurada');
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent?key=${apiKey}`;
   const truncated = text.slice(0, 8000);
-  const result = await model.embedContent(truncated);
-  return result.embedding.values; // number[]
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      content: {
+        parts: [{ text: truncated }]
+      }
+    }),
+  });
+
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error?.message || `Error en la API de Gemini: ${res.status}`);
+  }
+
+  const data = await res.json();
+  if (!data.embedding || !data.embedding.values) {
+    throw new Error('Formato de respuesta de embedding de Gemini inesperado');
+  }
+
+  return data.embedding.values; // number[]
 }
 
 // Embed many chunks; Gemini free tier allows ~1500 req/min, so no batching needed at this scale
