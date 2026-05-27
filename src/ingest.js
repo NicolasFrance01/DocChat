@@ -80,6 +80,10 @@ function chunkText(text) {
       chunks.push({ content, chunkIndex: chunks.length });
     }
 
+    if (end >= text.length) {
+      break;
+    }
+
     start = end - overlapChars;
     if (start <= 0) break; // safety: avoid infinite loop on tiny texts
   }
