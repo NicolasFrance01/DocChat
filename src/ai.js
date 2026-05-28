@@ -29,9 +29,7 @@ async function embedText(text) {
       content: {
         parts: [{ text: truncated }]
       },
-      embedContentConfig: {
-        output_dimensionality: 768
-      }
+      outputDimensionality: 768
     }),
   });
 
