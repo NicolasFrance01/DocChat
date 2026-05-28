@@ -28,6 +28,9 @@ async function embedText(text) {
       model: "models/gemini-embedding-001",
       content: {
         parts: [{ text: truncated }]
+      },
+      embedContentConfig: {
+        outputDimensionality: 768
       }
     }),
   });
