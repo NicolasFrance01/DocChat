@@ -30,7 +30,7 @@ async function embedText(text) {
         parts: [{ text: truncated }]
       },
       embedContentConfig: {
-        outputDimensionality: 768
+        output_dimensionality: 768
       }
     }),
   });
