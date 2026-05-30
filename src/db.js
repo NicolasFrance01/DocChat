@@ -18,13 +18,19 @@ async function initDb() {
   const schema = fs.readFileSync(path.join(__dirname, '..', 'schema.sql'), 'utf8');
   await pool.query(schema);
 
+  // Apply explicit migrations for existing tables to ensure backward compatibility
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT;`).catch(() => {});
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed BOOLEAN NOT NULL DEFAULT FALSE;`).catch(() => {});
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';`).catch(() => {});
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES messages(id) ON DELETE CASCADE;`).catch(() => {});
+
   // Seed admin if not exists
   const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
   const existing = await pool.query('SELECT id FROM users WHERE username = $1', ['admin']);
   if (existing.rowCount === 0) {
     const hash = await bcrypt.hash(adminPassword, 10);
     await pool.query(
-      "INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'admin')",
+      "INSERT INTO users (username, password_hash, role, full_name, password_changed) VALUES ($1, $2, 'admin', 'Administrador', TRUE)",
       ['admin', hash]
     );
     console.log('[db] Admin user created');
@@ -39,16 +45,56 @@ async function getUserByUsername(username) {
 }
 
 async function getUserById(id) {
-  const { rows } = await pool.query('SELECT id, username, role, created_at FROM users WHERE id = $1', [id]);
+  const { rows } = await pool.query('SELECT id, username, full_name, role, password_changed, status, created_at FROM users WHERE id = $1', [id]);
   return rows[0] || null;
 }
 
-async function createUser(username, passwordHash, role = 'user') {
+async function getUsers() {
   const { rows } = await pool.query(
-    'INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id, username, role, created_at',
-    [username, passwordHash, role]
+    'SELECT id, username, full_name, role, password_changed, status, created_at FROM users ORDER BY created_at DESC'
+  );
+  return rows;
+}
+
+async function createUser(username, passwordHash, role = 'user', fullName = null) {
+  const { rows } = await pool.query(
+    'INSERT INTO users (username, password_hash, role, full_name, password_changed) VALUES ($1, $2, $3, $4, FALSE) RETURNING id, username, full_name, role, created_at',
+    [username, passwordHash, role, fullName]
   );
   return rows[0];
+}
+
+async function deleteUser(id) {
+  const { rowCount } = await pool.query('DELETE FROM users WHERE id = $1', [id]);
+  return rowCount > 0;
+}
+
+async function updateUserRole(id, role) {
+  const { rows } = await pool.query(
+    'UPDATE users SET role = $1 WHERE id = $2 RETURNING id, username, role',
+    [role, id]
+  );
+  return rows[0] || null;
+}
+
+async function updateUserPassword(id, passwordHash) {
+  const { rowCount } = await pool.query(
+    "UPDATE users SET password_hash = $1, password_changed = TRUE, status = 'active' WHERE id = $2",
+    [passwordHash, id]
+  );
+  return rowCount > 0;
+}
+
+async function resetUserPassword(id, passwordHash) {
+  const { rowCount } = await pool.query(
+    "UPDATE users SET password_hash = $1, password_changed = FALSE, status = 'active', created_at = NOW() WHERE id = $2",
+    [passwordHash, id]
+  );
+  return rowCount > 0;
+}
+
+async function updateUserStatus(id, status) {
+  await pool.query('UPDATE users SET status = $1 WHERE id = $2', [status, id]);
 }
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────
@@ -62,7 +108,7 @@ async function createSession(token, userId, expiresAt) {
 
 async function getSession(token) {
   const { rows } = await pool.query(
-    `SELECT s.*, u.username, u.role
+    `SELECT s.*, u.username, u.full_name, u.role, u.status, u.password_changed, u.created_at AS user_created_at
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      WHERE s.token = $1 AND s.expires_at > NOW()`,
@@ -82,12 +128,24 @@ async function cleanExpiredSessions() {
 
 // ─── Notebooks ────────────────────────────────────────────────────────────────
 
-async function getNotebooksByUser(userId) {
+async function getNotebooksByUser(userId, role = 'user') {
+  if (role === 'admin') {
+    const { rows } = await pool.query(
+      `SELECT n.*, COUNT(d.id)::int AS document_count
+       FROM notebooks n
+       LEFT JOIN documents d ON d.notebook_id = n.id
+       GROUP BY n.id
+       ORDER BY n.created_at DESC`
+    );
+    return rows;
+  }
+
   const { rows } = await pool.query(
     `SELECT n.*, COUNT(d.id)::int AS document_count
      FROM notebooks n
      LEFT JOIN documents d ON d.notebook_id = n.id
-     WHERE n.user_id = $1
+     LEFT JOIN notebook_users nu ON nu.notebook_id = n.id
+     WHERE n.user_id = $1 OR nu.user_id = $1
      GROUP BY n.id
      ORDER BY n.created_at DESC`,
     [userId]
@@ -95,9 +153,15 @@ async function getNotebooksByUser(userId) {
   return rows;
 }
 
-async function getNotebookById(id, userId) {
+async function getNotebookById(id, userId, role = 'user') {
+  if (role === 'admin') {
+    const { rows } = await pool.query('SELECT * FROM notebooks WHERE id = $1', [id]);
+    return rows[0] || null;
+  }
   const { rows } = await pool.query(
-    'SELECT * FROM notebooks WHERE id = $1 AND user_id = $2',
+    `SELECT DISTINCT n.* FROM notebooks n
+     LEFT JOIN notebook_users nu ON nu.notebook_id = n.id
+     WHERE n.id = $1 AND (n.user_id = $2 OR nu.user_id = $2)`,
     [id, userId]
   );
   return rows[0] || null;
@@ -112,11 +176,95 @@ async function createNotebook(userId, name, description = null) {
 }
 
 async function deleteNotebook(id, userId) {
+  // If user is admin, allow deletion directly
+  const user = await getUserById(userId);
+  if (user && user.role === 'admin') {
+    const { rowCount } = await pool.query('DELETE FROM notebooks WHERE id = $1', [id]);
+    return rowCount > 0;
+  }
+
   const { rowCount } = await pool.query(
     'DELETE FROM notebooks WHERE id = $1 AND user_id = $2',
     [id, userId]
   );
   return rowCount > 0;
+}
+
+// ─── Control de Acceso por Notebook (ACL) ────────────────────────────────────
+
+async function getNotebookUsers(notebookId) {
+  const { rows } = await pool.query(
+    `SELECT nu.user_id, nu.role, u.username, u.full_name
+     FROM notebook_users nu
+     JOIN users u ON u.id = nu.user_id
+     WHERE nu.notebook_id = $1
+     ORDER BY nu.created_at DESC`,
+    [notebookId]
+  );
+  return rows;
+}
+
+async function addNotebookUser(notebookId, userId, role = 'user') {
+  await pool.query(
+    `INSERT INTO notebook_users (notebook_id, user_id, role)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (notebook_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+    [notebookId, userId, role]
+  );
+}
+
+async function removeNotebookUser(notebookId, userId) {
+  const { rowCount } = await pool.query(
+    'DELETE FROM notebook_users WHERE notebook_id = $1 AND user_id = $2',
+    [notebookId, userId]
+  );
+  return rowCount > 0;
+}
+
+// ─── Invitaciones a Notebooks ───────────────────────────────────────────────
+
+async function createNotebookInvitation(notebookId, role = 'user', expiresAt = null) {
+  const { v4: uuidv4 } = require('uuid');
+  const token = uuidv4();
+  await pool.query(
+    'INSERT INTO notebook_invitations (token, notebook_id, role, expires_at) VALUES ($1, $2, $3, $4)',
+    [token, notebookId, role, expiresAt]
+  );
+  return token;
+}
+
+async function getNotebookInvitation(token) {
+  const { rows } = await pool.query(
+    `SELECT * FROM notebook_invitations 
+     WHERE token = $1 AND (expires_at IS NULL OR expires_at > NOW())`,
+    [token]
+  );
+  return rows[0] || null;
+}
+
+async function claimNotebookInvitation(token, userId) {
+  const invite = await getNotebookInvitation(token);
+  if (!invite) throw new Error('Enlace de invitación inválido o expirado');
+
+  await addNotebookUser(invite.notebook_id, userId, invite.role);
+  return invite.notebook_id;
+}
+
+// ─── Auditoría de Actividad ──────────────────────────────────────────────────
+
+async function logActivity(userId, username, action, notebookId, notebookName, documentId = null, documentName = null, details = null) {
+  await pool.query(
+    `INSERT INTO activity_logs (user_id, username, action, notebook_id, notebook_name, document_id, document_name, details)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [userId, username, action, notebookId, notebookName, documentId, documentName, details]
+  );
+}
+
+async function getActivityLogs() {
+  const { rows } = await pool.query(
+    'SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 100'
+  );
+  return rows;
 }
 
 // ─── Documents ────────────────────────────────────────────────────────────────
@@ -153,16 +301,13 @@ async function deleteDocument(id) {
 
 // ─── Document chunks ──────────────────────────────────────────────────────────
 
-// Insert many chunks in a single transaction
 async function insertChunks(chunks) {
-  // chunks: [{documentId, content, embedding: number[], chunkIndex, pageNumber}]
   if (chunks.length === 0) return;
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     for (const c of chunks) {
-      // pgvector expects the vector as a string '[n1,n2,...]' or a JS array
       const embStr = `[${c.embedding.join(',')}]`;
       await client.query(
         `INSERT INTO document_chunks (document_id, content, embedding, chunk_index, page_number)
@@ -179,21 +324,28 @@ async function insertChunks(chunks) {
   }
 }
 
-// Cosine similarity search — returns top-k chunks across all documents in a notebook
-async function searchChunks(notebookId, queryEmbedding, topK = 5) {
+async function searchChunks(notebookId, queryEmbedding, topK = 5, documentIds = null) {
   const embStr = `[${queryEmbedding.join(',')}]`;
-  const { rows } = await pool.query(
-    `SELECT dc.id, dc.document_id, dc.content, dc.chunk_index, dc.page_number,
+  let query = `
+     SELECT dc.id, dc.document_id, dc.content, dc.chunk_index, dc.page_number,
             d.name AS document_name,
             1 - (dc.embedding <=> $1::vector) AS similarity
      FROM document_chunks dc
      JOIN documents d ON d.id = dc.document_id
      WHERE d.notebook_id = $2
        AND dc.embedding IS NOT NULL
-     ORDER BY dc.embedding <=> $1::vector
-     LIMIT $3`,
-    [embStr, notebookId, topK]
-  );
+  `;
+  const params = [embStr, notebookId];
+
+  if (Array.isArray(documentIds) && documentIds.length > 0) {
+    params.push(documentIds);
+    query += ` AND dc.document_id = ANY($${params.length})`;
+  }
+
+  query += ` ORDER BY dc.embedding <=> $1::vector LIMIT $${params.length + 1}`;
+  params.push(topK);
+
+  const { rows } = await pool.query(query, params);
   return rows;
 }
 
@@ -232,23 +384,30 @@ async function createConversation(notebookId, userId, title = null) {
   return rows[0];
 }
 
+async function updateConversationTitle(conversationId, title) {
+  await pool.query(
+    'UPDATE conversations SET title = $1 WHERE id = $2',
+    [title, conversationId]
+  );
+}
+
 // ─── Messages ─────────────────────────────────────────────────────────────────
 
-async function getMessagesByConversation(conversationId, limit = 20) {
+async function getMessagesByConversation(conversationId, limit = 100) {
   const { rows } = await pool.query(
     `SELECT * FROM messages
      WHERE conversation_id = $1
-     ORDER BY created_at DESC
+     ORDER BY created_at ASC
      LIMIT $2`,
     [conversationId, limit]
   );
-  return rows.reverse(); // chronological order
+  return rows; // Return directly in ascending order
 }
 
-async function saveMessage(conversationId, role, content, sources = null) {
+async function saveMessage(conversationId, role, content, parentId = null, sources = null) {
   const { rows } = await pool.query(
-    'INSERT INTO messages (conversation_id, role, content, sources) VALUES ($1, $2, $3, $4) RETURNING *',
-    [conversationId, role, content, sources ? JSON.stringify(sources) : null]
+    'INSERT INTO messages (conversation_id, role, content, parent_id, sources) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+    [conversationId, role, content, parentId, sources ? JSON.stringify(sources) : null]
   );
   return rows[0];
 }
@@ -259,7 +418,13 @@ module.exports = {
   // users
   getUserByUsername,
   getUserById,
+  getUsers,
   createUser,
+  deleteUser,
+  updateUserRole,
+  updateUserPassword,
+  resetUserPassword,
+  updateUserStatus,
   // sessions
   createSession,
   getSession,
@@ -270,6 +435,17 @@ module.exports = {
   getNotebookById,
   createNotebook,
   deleteNotebook,
+  // notebook ACL & sharing
+  getNotebookUsers,
+  addNotebookUser,
+  removeNotebookUser,
+  // notebook invitations
+  createNotebookInvitation,
+  getNotebookInvitation,
+  claimNotebookInvitation,
+  // activity logging
+  logActivity,
+  getActivityLogs,
   // documents
   getDocumentsByNotebook,
   getDocumentById,
@@ -284,7 +460,9 @@ module.exports = {
   getConversationsByNotebook,
   getConversationById,
   createConversation,
+  updateConversationTitle,
   // messages
   getMessagesByConversation,
   saveMessage,
 };
+

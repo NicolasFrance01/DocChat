@@ -21,6 +21,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (res.status === 401) {
     localStorage.removeItem('docchat_token');
+    localStorage.removeItem('docchat_user');
     window.location.href = '/login';
     throw new Error('Unauthorized');
   }
@@ -39,16 +40,60 @@ export async function login(username: string, password: string) {
     body: JSON.stringify({ username, password }),
   });
   localStorage.setItem('docchat_token', data.token);
+  localStorage.setItem('docchat_user', JSON.stringify(data.user));
   return data;
 }
 
 export async function logout() {
   await request('/api/auth/logout', { method: 'POST' }).catch(() => {});
   localStorage.removeItem('docchat_token');
+  localStorage.removeItem('docchat_user');
 }
 
 export async function getMe() {
   return request<{ user: User }>('/api/users/me');
+}
+
+export async function changePassword(newPassword: string) {
+  return request('/api/users/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ newPassword }),
+  });
+}
+
+// ─── Admin Dashboard ──────────────────────────────────────────────────────────
+
+export async function getUsers() {
+  return request<{ users: UserAdmin[] }>('/api/admin/users');
+}
+
+export async function createUser(username: string, password: string, role: string, fullName: string) {
+  return request<{ user: User }>('/api/admin/users', {
+    method: 'POST',
+    body: JSON.stringify({ username, password, role, fullName }),
+  });
+}
+
+export async function deleteUser(id: number) {
+  return request(`/api/admin/users/${id}`, { method: 'DELETE' });
+}
+
+export async function resetUserPassword(id: number, newPassword: string) {
+  return request(`/api/admin/users/${id}/reset-password`, {
+    method: 'POST',
+    body: JSON.stringify({ newPassword }),
+  });
+}
+
+
+export async function getActivities() {
+  return request<{ activities: Activity[] }>('/api/admin/activities');
+}
+
+// ─── User Search Autocomplete ─────────────────────────────────────────────────
+
+export async function searchUsers(q: string) {
+  return request<{ users: User[] }>(`/api/users/search?q=${encodeURIComponent(q)}`);
 }
 
 // ─── Notebooks ────────────────────────────────────────────────────────────────
@@ -68,10 +113,45 @@ export async function deleteNotebook(id: number) {
   return request(`/api/notebooks/${id}`, { method: 'DELETE' });
 }
 
+// ─── Notebook Access Control & Invitations ────────────────────────────────────
+
+export async function getNotebookUsers(notebookId: number) {
+  return request<{ users: NotebookUser[] }>(`/api/notebooks/${notebookId}/users`);
+}
+
+export async function addNotebookUser(notebookId: number, userId: number, role: string) {
+  return request(`/api/notebooks/${notebookId}/users`, {
+    method: 'POST',
+    body: JSON.stringify({ userId, role }),
+  });
+}
+
+export async function removeNotebookUser(notebookId: number, userId: number) {
+  return request(`/api/notebooks/${notebookId}/users/${userId}`, { method: 'DELETE' });
+}
+
+export async function createInvitation(notebookId: number, role: string, expiresDays?: number) {
+  return request<{ token: string }>(`/api/notebooks/${notebookId}/invitations`, {
+    method: 'POST',
+    body: JSON.stringify({ role, expiresDays }),
+  });
+}
+
+export async function claimInvitation(token: string) {
+  return request<{ ok: boolean; notebookId: number }>('/api/invitations/claim', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  });
+}
+
 // ─── Documents ────────────────────────────────────────────────────────────────
 
 export async function getDocuments(notebookId: number) {
   return request<{ documents: Document[] }>(`/api/notebooks/${notebookId}/documents`);
+}
+
+export async function getDocument(id: number) {
+  return request<{ document: DocumentText }>(`/api/documents/${id}`);
 }
 
 export async function uploadDocument(notebookId: number, file: File, onProgress?: (pct: number) => void) {
@@ -95,8 +175,6 @@ export async function uploadDocument(notebookId: number, file: File, onProgress?
     const form = new FormData();
     form.append('file', file);
 
-    // Upload goes to Vercel API route — extracts text there, sends only text to Render
-    // This avoids OOM on Render free tier (512MB RAM)
     xhr.open('POST', `/api/ingest/${notebookId}`);
     if (t) xhr.setRequestHeader('X-Session-Token', t);
     xhr.send(form);
@@ -119,7 +197,7 @@ export async function deleteDocument(id: number) {
 export interface ChatCallbacks {
   onMeta: (conversationId: number) => void;
   onDelta: (text: string) => void;
-  onDone: (sources: Source[]) => void;
+  onDone: (sources: Source[], title?: string | null) => void;
   onError: (msg: string) => void;
 }
 
@@ -127,6 +205,8 @@ export async function sendChat(
   notebookId: number,
   message: string,
   conversationId: number | null,
+  parentId: number | null,
+  documentIds: number[] | null,
   callbacks: ChatCallbacks
 ) {
   const t = token();
@@ -136,7 +216,7 @@ export async function sendChat(
       'Content-Type': 'application/json',
       ...(t ? { 'X-Session-Token': t } : {}),
     },
-    body: JSON.stringify({ message, conversation_id: conversationId }),
+    body: JSON.stringify({ message, conversation_id: conversationId, parent_id: parentId, document_ids: documentIds }),
   });
 
   if (!res.ok || !res.body) {
@@ -162,7 +242,7 @@ export async function sendChat(
         const evt = JSON.parse(line.slice(6));
         if (evt.type === 'meta') callbacks.onMeta(evt.conversation_id);
         else if (evt.type === 'delta') callbacks.onDelta(evt.content);
-        else if (evt.type === 'done') callbacks.onDone(evt.sources ?? []);
+        else if (evt.type === 'done') callbacks.onDone(evt.sources ?? [], evt.title);
         else if (evt.type === 'error') callbacks.onError(evt.message);
       } catch {}
     }
@@ -181,9 +261,14 @@ export async function getMessages(conversationId: number) {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface User { id: number; username: string; role: string; }
-export interface Notebook { id: number; name: string; description: string | null; document_count: number; created_at: string; }
+export interface User { id: number; username: string; role: string; full_name: string | null; password_changed: boolean; user_created_at?: string; }
+export interface UserAdmin { id: number; username: string; role: string; full_name: string | null; password_changed: boolean; status: string; created_at: string; }
+export interface Activity { id: number; user_id: number | null; username: string; action: string; notebook_id: number | null; notebook_name: string | null; document_id: number | null; document_name: string | null; details: string | null; created_at: string; }
+export interface NotebookUser { user_id: number; role: string; username: string; full_name: string | null; }
+export interface Notebook { id: number; user_id: number; name: string; description: string | null; document_count: number; created_at: string; }
 export interface Document { id: number; notebook_id: number; name: string; type: string; source: string | null; chunk_count: number; created_at: string; }
+export interface DocumentText extends Document { raw_text: string | null; }
 export interface Conversation { id: number; notebook_id: number; title: string | null; message_count: number; created_at: string; }
-export interface Message { id: number; conversation_id: number; role: 'user' | 'assistant'; content: string; sources: Source[] | null; created_at: string; }
+export interface Message { id: number; conversation_id: number; role: 'user' | 'assistant'; content: string; sources: Source[] | null; parent_id: number | null; created_at: string; }
 export interface Source { chunk_id: number; document_name: string; page_number: number | null; excerpt: string; similarity: number; }
+

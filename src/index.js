@@ -39,7 +39,27 @@ async function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Token requerido' });
   const session = await db.getSession(token);
   if (!session) return res.status(401).json({ error: 'Sesión inválida o expirada' });
-  req.user = { id: session.user_id, username: session.username, role: session.role };
+
+  // Check 48h password safety suspension
+  const hrs = (Date.now() - new Date(session.user_created_at).getTime()) / (1000 * 60 * 60);
+  let status = session.status;
+  if (status !== 'suspended' && !session.password_changed && hrs > 48) {
+    await db.updateUserStatus(session.user_id, 'suspended');
+    status = 'suspended';
+  }
+
+  if (status === 'suspended') {
+    return res.status(403).json({ error: 'Cuenta suspendida por políticas de seguridad (falta de cambio de contraseña inicial dentro de las 48hs). Por favor contacte al administrador.' });
+  }
+
+  req.user = { 
+    id: session.user_id, 
+    username: session.username, 
+    full_name: session.full_name,
+    role: session.role,
+    password_changed: session.password_changed,
+    user_created_at: session.user_created_at
+  };
   next();
 }
 
@@ -54,8 +74,21 @@ app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Faltan campos' });
 
-    const user = await db.getUserByUsername(username);
+    const cleanUsername = username.startsWith('@') ? username : `@${username}`;
+    const user = await db.getUserByUsername(cleanUsername);
     if (!user) return res.status(401).json({ error: 'Credenciales incorrectas' });
+
+    // Check suspension BEFORE login!
+    const hrs = (Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60);
+    let status = user.status;
+    if (status !== 'suspended' && !user.password_changed && hrs > 48) {
+      await db.updateUserStatus(user.id, 'suspended');
+      status = 'suspended';
+    }
+
+    if (status === 'suspended') {
+      return res.status(403).json({ error: 'Cuenta suspendida por políticas de seguridad (falta de cambio de contraseña inicial dentro de las 48hs). Por favor contacte al administrador.' });
+    }
 
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Credenciales incorrectas' });
@@ -64,7 +97,7 @@ app.post('/api/auth/login', async (req, res) => {
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
     await db.createSession(token, user.id, expiresAt);
 
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
+    res.json({ token, user: { id: user.id, username: user.username, role: user.role, full_name: user.full_name, password_changed: user.password_changed } });
   } catch (err) {
     console.error('[login]', err);
     res.status(500).json({ error: 'Error interno' });
@@ -80,11 +113,12 @@ app.post('/api/auth/logout', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+
 // ─── Notebooks ────────────────────────────────────────────────────────────────
 
 app.get('/api/notebooks', requireAuth, async (req, res) => {
   try {
-    const notebooks = await db.getNotebooksByUser(req.user.id);
+    const notebooks = await db.getNotebooksByUser(req.user.id, req.user.role);
     res.json({ notebooks });
   } catch (err) {
     console.error('[notebooks:list]', err);
@@ -96,7 +130,15 @@ app.post('/api/notebooks', requireAuth, async (req, res) => {
   try {
     const { name, description } = req.body;
     if (!name) return res.status(400).json({ error: 'El nombre es requerido' });
+    
+    // Non-admin and non-creator cannot create notebooks
+    if (req.user.role !== 'admin' && req.user.role !== 'creator') {
+      return res.status(403).json({ error: 'No tienes permisos para crear notebooks' });
+    }
+
     const notebook = await db.createNotebook(req.user.id, name, description);
+    await db.logActivity(req.user.id, req.user.username, 'create_notebook', notebook.id, notebook.name, null, null, `Notebook "${name}" creado`);
+
     res.status(201).json({ notebook });
   } catch (err) {
     console.error('[notebooks:create]', err);
@@ -106,8 +148,19 @@ app.post('/api/notebooks', requireAuth, async (req, res) => {
 
 app.delete('/api/notebooks/:id', requireAuth, async (req, res) => {
   try {
-    const deleted = await db.deleteNotebook(Number(req.params.id), req.user.id);
+    const notebookId = Number(req.params.id);
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    // Non-admin and non-creator (unless owner) cannot delete
+    if (req.user.role !== 'admin' && notebook.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'No tienes permisos para eliminar este notebook' });
+    }
+
+    const deleted = await db.deleteNotebook(notebookId, req.user.id);
     if (!deleted) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    await db.logActivity(req.user.id, req.user.username, 'delete_notebook', notebookId, notebook.name, null, null, `Notebook "${notebook.name}" eliminado`);
     res.json({ ok: true });
   } catch (err) {
     console.error('[notebooks:delete]', err);
@@ -115,11 +168,21 @@ app.delete('/api/notebooks/:id', requireAuth, async (req, res) => {
   }
 });
 
+
+// Helper to check if a user has creator/write permission on a notebook
+async function hasCreatorPermission(notebook, user) {
+  if (user.role === 'admin') return true;
+  if (notebook.user_id === user.id) return true;
+  const acl = await db.getNotebookUsers(notebook.id);
+  const userAcl = acl.find(a => a.user_id === user.id);
+  return userAcl && userAcl.role === 'creator';
+}
+
 // ─── Documents ────────────────────────────────────────────────────────────────
 
 app.get('/api/notebooks/:id/documents', requireAuth, async (req, res) => {
   try {
-    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id);
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
     if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
     const documents = await db.getDocumentsByNotebook(notebook.id);
     res.json({ documents });
@@ -129,12 +192,34 @@ app.get('/api/notebooks/:id/documents', requireAuth, async (req, res) => {
   }
 });
 
+// GET specific document by ID
+app.get('/api/documents/:id', requireAuth, async (req, res) => {
+  try {
+    const docId = Number(req.params.id);
+    const doc = await db.getDocumentById(docId);
+    if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
+
+    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    res.json({ document: doc });
+  } catch (err) {
+    console.error('[documents:get]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 // Upload PDF / DOCX / TXT
 app.post('/api/notebooks/:id/documents', requireAuth, upload.single('file'), async (req, res) => {
   const tmpPath = req.file?.path;
   try {
-    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id);
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
     if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+    
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
     if (!req.file) return res.status(400).json({ error: 'Archivo requerido' });
 
     const type = detectType(req.file.originalname);
@@ -146,6 +231,7 @@ app.post('/api/notebooks/:id/documents', requireAuth, upload.single('file'), asy
 
     // Save document record
     const doc = await db.createDocument(notebook.id, req.file.originalname, type, req.file.originalname, rawText);
+    await db.logActivity(req.user.id, req.user.username, 'upload_document', notebook.id, notebook.name, doc.id, doc.name, `Archivo "${req.file.originalname}" subido`);
 
     // Generate embeddings and store chunks (async, respond 202 immediately to avoid timeout)
     res.status(202).json({ document: doc, message: 'Procesando embeddings en segundo plano…' });
@@ -163,8 +249,13 @@ app.post('/api/notebooks/:id/documents', requireAuth, upload.single('file'), asy
 // Ingest from URL
 app.post('/api/notebooks/:id/documents/url', requireAuth, async (req, res) => {
   try {
-    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id);
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
     if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'URL requerida' });
 
@@ -173,6 +264,7 @@ app.post('/api/notebooks/:id/documents/url', requireAuth, async (req, res) => {
 
     const name = title || url;
     const doc = await db.createDocument(notebook.id, name, 'url', url, rawText);
+    await db.logActivity(req.user.id, req.user.username, 'upload_document', notebook.id, notebook.name, doc.id, doc.name, `Documento URL "${name}" ingestado`);
 
     res.status(202).json({ document: doc, message: 'Procesando embeddings en segundo plano…' });
     embedAndStore(doc.id, chunks).catch(err => console.error('[ingest:embed:url]', err));
@@ -185,14 +277,20 @@ app.post('/api/notebooks/:id/documents/url', requireAuth, async (req, res) => {
 // Receive pre-extracted text from Vercel (no file in memory on Render)
 app.post('/api/notebooks/:id/documents/text', requireAuth, async (req, res) => {
   try {
-    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id);
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
     if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
 
     const { name, type, source, text } = req.body;
     if (!name || !type || !text) return res.status(400).json({ error: 'Faltan campos: name, type, text' });
     if (text.trim().length === 0) return res.status(422).json({ error: 'El documento no contiene texto extraíble' });
 
     const doc = await db.createDocument(notebook.id, name, type, source || name, text);
+    await db.logActivity(req.user.id, req.user.username, 'upload_document', notebook.id, notebook.name, doc.id, doc.name, `Archivo "${name}" creado vía proxy`);
+
     res.status(202).json({ document: doc, message: 'Procesando embeddings en segundo plano…' });
 
     const chunks = chunkText(text);
@@ -207,17 +305,24 @@ app.delete('/api/documents/:id', requireAuth, async (req, res) => {
   try {
     const doc = await db.getDocumentById(Number(req.params.id));
     if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
-    // Verify ownership via notebook
-    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id);
-    if (!notebook) return res.status(403).json({ error: 'Sin permiso' });
+    
+    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
 
     await db.deleteDocument(doc.id);
+    await db.logActivity(req.user.id, req.user.username, 'delete_document', notebook.id, notebook.name, doc.id, doc.name, `Documento "${doc.name}" eliminado`);
+
     res.json({ ok: true });
   } catch (err) {
     console.error('[documents:delete]', err);
     res.status(500).json({ error: 'Error interno' });
   }
 });
+
 
 // Background: embed chunks and persist in batches of 20 to prevent Render OOM
 async function embedAndStore(documentId, rawChunks) {
@@ -249,11 +354,250 @@ async function embedAndStore(documentId, rawChunks) {
   console.log(`[ingest] Document ${documentId}: total ${storedCount} chunks stored`);
 }
 
+// ─── Admin & User Management Endpoints ────────────────────────────────────────
+
+async function requireAdmin(req, res, next) {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Acceso denegado (requiere rol de administrador)' });
+  }
+  next();
+}
+
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const users = await db.getUsers();
+    res.json({ users });
+  } catch (err) {
+    console.error('[admin:get-users]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { username, password, role, fullName } = req.body;
+    if (!username || !password || !role || !fullName) {
+      return res.status(400).json({ error: 'Faltan campos obligatorios' });
+    }
+    const cleanUsername = username.startsWith('@') ? username : `@${username}`;
+    const existing = await db.getUserByUsername(cleanUsername);
+    if (existing) return res.status(400).json({ error: 'El nombre de usuario ya está registrado' });
+
+    const hash = await bcrypt.hash(password, 10);
+    const newUser = await db.createUser(cleanUsername, hash, role, fullName);
+    await db.logActivity(req.user.id, req.user.username, 'create_user', null, null, null, null, `Usuario ${cleanUsername} creado con rol ${role}`);
+
+    res.status(201).json({ user: newUser });
+  } catch (err) {
+    console.error('[admin:create-user]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const userIdToDelete = Number(req.params.id);
+    if (userIdToDelete === req.user.id) {
+      return res.status(400).json({ error: 'No puedes eliminarte a ti mismo' });
+    }
+    const target = await db.getUserById(userIdToDelete);
+    if (!target) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+    await db.deleteUser(userIdToDelete);
+    await db.logActivity(req.user.id, req.user.username, 'delete_user', null, null, null, null, `Usuario ${target.username} eliminado`);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin:delete-user]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.post('/api/admin/users/:id/reset-password', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const targetId = Number(req.params.id);
+    const { newPassword } = req.body;
+    if (!newPassword) return res.status(400).json({ error: 'Nueva contraseña genérica requerida' });
+
+    const target = await db.getUserById(targetId);
+    if (!target) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+    const hash = await bcrypt.hash(newPassword, 10);
+    await db.resetUserPassword(targetId, hash);
+    await db.logActivity(req.user.id, req.user.username, 'reset_password', null, null, null, null, `Contraseña del usuario ${target.username} restablecida por el administrador`);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin:reset-password]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.get('/api/admin/activities', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const activities = await db.getActivityLogs();
+    res.json({ activities });
+  } catch (err) {
+    console.error('[admin:get-activities]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ─── Profile / Change Password ────────────────────────────────────────────────
+
+app.post('/api/users/change-password', requireAuth, async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    if (!newPassword || newPassword.length < 4) {
+      return res.status(400).json({ error: 'La contraseña debe tener al menos 4 caracteres' });
+    }
+    const hash = await bcrypt.hash(newPassword, 10);
+    await db.updateUserPassword(req.user.id, hash);
+    await db.logActivity(req.user.id, req.user.username, 'change_password', null, null, null, null, 'Contraseña cambiada por el usuario');
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[users:change-password]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ─── User Search Autocomplete ─────────────────────────────────────────────────
+
+app.get('/api/users/search', requireAuth, async (req, res) => {
+  try {
+    const q = req.query.q || '';
+    if (q.length < 2) return res.json({ users: [] });
+
+    const { rows } = await db.pool.query(
+      `SELECT id, username, full_name, role 
+       FROM users 
+       WHERE (username ILIKE $1 OR full_name ILIKE $1)
+         AND id != $2
+       LIMIT 10`,
+      [`%${q}%`, req.user.id]
+    );
+    res.json({ users: rows });
+  } catch (err) {
+    console.error('[users:search]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ─── Notebook Access Control & Sharing ────────────────────────────────────────
+
+app.get('/api/notebooks/:id/users', requireAuth, async (req, res) => {
+  try {
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (req.user.role !== 'admin' && notebook.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Sin privilegios para gestionar la compartición' });
+    }
+
+    const sharedUsers = await db.getNotebookUsers(notebook.id);
+    res.json({ users: sharedUsers });
+  } catch (err) {
+    console.error('[notebooks:get-users]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.post('/api/notebooks/:id/users', requireAuth, async (req, res) => {
+  try {
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (req.user.role !== 'admin' && notebook.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Sin privilegios para gestionar la compartición' });
+    }
+
+    const { userId, role } = req.body;
+    if (!userId || !role) return res.status(400).json({ error: 'Faltan campos: userId, role' });
+
+    const targetUser = await db.getUserById(Number(userId));
+    if (!targetUser) return res.status(404).json({ error: 'Usuario a agregar no encontrado' });
+
+    await db.addNotebookUser(notebook.id, targetUser.id, role);
+    await db.logActivity(req.user.id, req.user.username, 'add_user', notebook.id, notebook.name, null, null, `Usuario ${targetUser.username} habilitado con rol ${role}`);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[notebooks:add-user]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.delete('/api/notebooks/:id/users/:userId', requireAuth, async (req, res) => {
+  try {
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (req.user.role !== 'admin' && notebook.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Sin privilegios para gestionar la compartición' });
+    }
+
+    const targetUserId = Number(req.params.userId);
+    const targetUser = await db.getUserById(targetUserId);
+    if (!targetUser) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+    await db.removeNotebookUser(notebook.id, targetUserId);
+    await db.logActivity(req.user.id, req.user.username, 'remove_user', notebook.id, notebook.name, null, null, `Usuario ${targetUser.username} removido del notebook`);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[notebooks:remove-user]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.post('/api/notebooks/:id/invitations', requireAuth, async (req, res) => {
+  try {
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (req.user.role !== 'admin' && notebook.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Sin privilegios para crear invitaciones' });
+    }
+
+    const { role, expiresDays } = req.body;
+    const expiresAt = expiresDays ? new Date(Date.now() + expiresDays * 24 * 60 * 60 * 1000) : null;
+
+    const token = await db.createNotebookInvitation(notebook.id, role || 'user', expiresAt);
+    await db.logActivity(req.user.id, req.user.username, 'create_invitation', notebook.id, notebook.name, null, null, `Enlace de invitación creado con rol ${role || 'user'}`);
+
+    res.status(201).json({ token });
+  } catch (err) {
+    console.error('[notebooks:create-invitation]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.post('/api/invitations/claim', requireAuth, async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Token de invitación requerido' });
+
+    const invite = await db.getNotebookInvitation(token);
+    if (!invite) return res.status(404).json({ error: 'Enlace de invitación inválido o expirado' });
+
+    const notebook = await db.pool.query('SELECT * FROM notebooks WHERE id = $1', [invite.notebook_id]).then(r => r.rows[0]);
+    if (!notebook) return res.status(404).json({ error: 'El notebook ya no existe' });
+
+    const notebookId = await db.claimNotebookInvitation(token, req.user.id);
+    await db.logActivity(req.user.id, req.user.username, 'claim_invitation', notebookId, notebook.name, null, null, `Usuario aceptó invitación al notebook`);
+
+    res.json({ ok: true, notebookId });
+  } catch (err) {
+    console.error('[invitations:claim]', err);
+    res.status(500).json({ error: err.message || 'Error interno' });
+  }
+});
+
 // ─── Conversations ────────────────────────────────────────────────────────────
 
 app.get('/api/notebooks/:id/conversations', requireAuth, async (req, res) => {
   try {
-    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id);
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
     if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
     const conversations = await db.getConversationsByNotebook(notebook.id, req.user.id);
     res.json({ conversations });
@@ -265,7 +609,12 @@ app.get('/api/notebooks/:id/conversations', requireAuth, async (req, res) => {
 
 app.get('/api/conversations/:id/messages', requireAuth, async (req, res) => {
   try {
-    const conv = await db.getConversationById(Number(req.params.id), req.user.id);
+    let conv;
+    if (req.user.role === 'admin') {
+      conv = await db.pool.query('SELECT * FROM conversations WHERE id = $1', [Number(req.params.id)]).then(r => r.rows[0]);
+    } else {
+      conv = await db.getConversationById(Number(req.params.id), req.user.id);
+    }
     if (!conv) return res.status(404).json({ error: 'Conversación no encontrada' });
     const messages = await db.getMessagesByConversation(conv.id);
     res.json({ messages });
@@ -279,26 +628,44 @@ app.get('/api/conversations/:id/messages', requireAuth, async (req, res) => {
 
 app.post('/api/notebooks/:id/chat', requireAuth, async (req, res) => {
   try {
-    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id);
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
     if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
 
-    const { message, conversation_id } = req.body;
+    const { message, conversation_id, parent_id, document_ids } = req.body;
     if (!message) return res.status(400).json({ error: 'Mensaje requerido' });
 
     // Get or create conversation
     let conversation;
     if (conversation_id) {
-      conversation = await db.getConversationById(conversation_id, req.user.id);
+      if (req.user.role === 'admin') {
+        conversation = await db.pool.query('SELECT * FROM conversations WHERE id = $1', [conversation_id]).then(r => r.rows[0]);
+      } else {
+        conversation = await db.getConversationById(conversation_id, req.user.id);
+      }
       if (!conversation) return res.status(404).json({ error: 'Conversación no encontrada' });
     } else {
       conversation = await db.createConversation(notebook.id, req.user.id, message.slice(0, 80));
     }
 
-    // Load recent history for context
-    const history = await db.getMessagesByConversation(conversation.id, 12);
+    // Load context history resolving branches using parent_id tree traversal!
+    let history = [];
+    if (parent_id) {
+      const allMessages = await db.getMessagesByConversation(conversation.id);
+      let currParentId = parent_id;
+      while (currParentId && history.length < 12) {
+        const msg = allMessages.find(m => m.id === currParentId);
+        if (!msg) break;
+        history.push(msg);
+        currParentId = msg.parent_id;
+      }
+      history.reverse(); // ascending chronological
+    } else if (conversation_id) {
+      // Default flat load if no parent_id is specified
+      history = await db.getMessagesByConversation(conversation.id, 12);
+    }
 
-    // Save user message
-    await db.saveMessage(conversation.id, 'user', message);
+    // Save user message with its parent_id
+    const userMsg = await db.saveMessage(conversation.id, 'user', message, parent_id);
 
     // SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
@@ -315,6 +682,7 @@ app.post('/api/notebooks/:id/chat', requireAuth, async (req, res) => {
       notebookId: notebook.id,
       userMessage: message,
       history,
+      documentIds: document_ids, // Filter search chunks by active documents!
       onChunk: (delta) => {
         res.write(`data: ${JSON.stringify({ type: 'delta', content: delta })}\n\n`);
       },
@@ -324,11 +692,19 @@ app.post('/api/notebooks/:id/chat', requireAuth, async (req, res) => {
       },
     });
 
-    // Save assistant message
-    await db.saveMessage(conversation.id, 'assistant', fullAnswer, finalSources);
+    // Save assistant message with parent_id set to the user message ID!
+    await db.saveMessage(conversation.id, 'assistant', fullAnswer, userMsg.id, finalSources);
 
-    // Send final event with sources
-    res.write(`data: ${JSON.stringify({ type: 'done', sources: finalSources })}\n\n`);
+    // Asynchronously generate title if it is the first interaction in a conversation!
+    let conversationTitle = null;
+    if (!conversation_id) {
+      const { generateConversationTitle } = require('./ai');
+      conversationTitle = await generateConversationTitle(message, fullAnswer);
+      await db.updateConversationTitle(conversation.id, conversationTitle);
+    }
+
+    // Send final event with sources and autotitled string
+    res.write(`data: ${JSON.stringify({ type: 'done', sources: finalSources, title: conversationTitle })}\n\n`);
     res.end();
   } catch (err) {
     console.error('[chat]', err);
@@ -339,6 +715,7 @@ app.post('/api/notebooks/:id/chat', requireAuth, async (req, res) => {
     }
   }
 });
+
 
 // ─── Keep-alive (Render free tier: suspende a los 15 min sin tráfico) ────────
 // Ping propio cada 13m35s para mantenerse activo sin gastar el límite de 15m.

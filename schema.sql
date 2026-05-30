@@ -8,7 +8,10 @@ CREATE TABLE IF NOT EXISTS users (
   id           SERIAL PRIMARY KEY,
   username     TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
-  role         TEXT NOT NULL DEFAULT 'user',  -- 'user' | 'admin'
+  role         TEXT NOT NULL DEFAULT 'user',  -- 'user' | 'creator' | 'admin'
+  full_name    TEXT,
+  password_changed BOOLEAN NOT NULL DEFAULT FALSE,
+  status       TEXT NOT NULL DEFAULT 'active', -- 'active' | 'suspended'
   created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -32,6 +35,38 @@ CREATE TABLE IF NOT EXISTS notebooks (
 );
 
 CREATE INDEX IF NOT EXISTS notebooks_user_id_idx ON notebooks(user_id);
+
+-- ─── Control de Acceso por Notebook (ACL) ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS notebook_users (
+  notebook_id INTEGER REFERENCES notebooks(id) ON DELETE CASCADE,
+  user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  role        TEXT NOT NULL DEFAULT 'user', -- 'user' | 'creator'
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (notebook_id, user_id)
+);
+
+-- ─── Invitaciones a Notebooks ───────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS notebook_invitations (
+  token       TEXT PRIMARY KEY,
+  notebook_id INTEGER REFERENCES notebooks(id) ON DELETE CASCADE,
+  role        TEXT NOT NULL DEFAULT 'user', -- 'user' | 'creator'
+  expires_at  TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ─── Registro de Actividad (Auditoría) ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS activity_logs (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  username TEXT NOT NULL,
+  action TEXT NOT NULL,          -- 'create_notebook', 'delete_notebook', 'upload_document', 'delete_document', 'add_user', 'remove_user', 'reset_password'
+  notebook_id INTEGER,
+  notebook_name TEXT,
+  document_id INTEGER,
+  document_name TEXT,
+  details TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 -- ─── Documents ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS documents (
@@ -59,9 +94,6 @@ CREATE TABLE IF NOT EXISTS document_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS chunks_document_id_idx ON document_chunks(document_id);
--- IVFFlat index for approximate nearest-neighbour cosine search
--- Create AFTER loading data (needs rows to set nlist); recreate if needed.
--- CREATE INDEX ON document_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- ─── Conversations ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS conversations (
@@ -82,11 +114,8 @@ CREATE TABLE IF NOT EXISTS messages (
   role            TEXT NOT NULL,       -- 'user' | 'assistant'
   content         TEXT NOT NULL,
   sources         JSONB,               -- [{chunk_id, document_name, page_number, excerpt}]
+  parent_id       INTEGER REFERENCES messages(id) ON DELETE CASCADE,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id);
-
--- ─── Seed admin user (password changed on first login) ────────────────────────
--- Password hash is set at startup by index.js using ADMIN_PASSWORD env var.
--- This table row is inserted programmatically, not here, to avoid hardcoding a hash.

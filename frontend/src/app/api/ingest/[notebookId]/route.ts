@@ -10,7 +10,20 @@ async function extractText(buffer: Buffer, filename: string): Promise<{ text: st
   if (ext === 'pdf') {
     // Dynamic import avoids the pdf-parse test-file issue in Next.js
     const pdfParse = (await import('pdf-parse')).default;
-    const data = await pdfParse(buffer);
+    
+    // Custom page rendering function to inject page breaks
+    const render_page = (pageData: any) => {
+      return pageData.getTextContent()
+        .then(function(textContent: any) {
+          let text = '';
+          for (let item of textContent.items) {
+            text += item.str + ' ';
+          }
+          return `\n--- PAGE_BREAK_P_${pageData.pageIndex + 1} ---\n` + text;
+        });
+    };
+
+    const data = await pdfParse(buffer, { pagerender: render_page });
     return { text: data.text, type: 'pdf' };
   }
 
@@ -23,6 +36,7 @@ async function extractText(buffer: Buffer, filename: string): Promise<{ text: st
   // txt / md — plain text
   return { text: buffer.toString('utf8'), type: 'txt' };
 }
+
 
 export async function POST(
   req: NextRequest,

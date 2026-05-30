@@ -2,9 +2,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  getDocuments, uploadDocument, ingestUrl, deleteDocument,
+  getDocuments, getDocument, uploadDocument, ingestUrl, deleteDocument,
   getConversations, getMessages, sendChat,
-  type Document, type Message, type Source,
+  searchUsers, getNotebookUsers, addNotebookUser, removeNotebookUser, createInvitation, changePassword,
+  type Document, type Message, type Source, type User, type NotebookUser, type Conversation
 } from '@/lib/api';
 
 export default function NotebookPage() {
@@ -12,7 +13,23 @@ export default function NotebookPage() {
   const notebookId = Number(id);
   const router = useRouter();
 
-  // Documents
+  // Logged User
+  const [me, setMe] = useState<User | null>(null);
+
+  // Warning Banner
+  const [passwordChangedState, setPasswordChangedState] = useState(true);
+
+  // Profile Modal State
+  const [showProfile, setShowProfile] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [profileSuccess, setProfileSuccess] = useState('');
+  const [profileError, setProfileError] = useState('');
+  const [profileLoading, setProfileLoading] = useState(false);
+
+  // Notebook metadata / allowed checks
+  const [isCreator, setIsCreator] = useState(false);
+
+  // Documents state
   const [docs, setDocs] = useState<Document[]>([]);
   const [docsLoading, setDocsLoading] = useState(true);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -20,9 +37,22 @@ export default function NotebookPage() {
   const [urlLoading, setUrlLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Chat
-  const [messages, setMessages] = useState<Message[]>([]);
+  // Active Document Context Selection (Checkboxes)
+  const [selectedDocs, setSelectedDocs] = useState<Record<number, boolean>>({});
+
+  // Conversations history sidebar
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [convsLoading, setConvsLoading] = useState(true);
   const [conversationId, setConversationId] = useState<number | null>(null);
+
+  // Chat tree branching state
+  const [allMessages, setAllMessages] = useState<Message[]>([]); // holds all dialogue nodes
+  const [renderedMessages, setRenderedMessages] = useState<Message[]>([]); // active branch messages
+  const [selectedVersions, setSelectedVersions] = useState<Record<number, number>>({}); // parentId -> active child index
+  const [editingMsgId, setEditingMsgId] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState('');
+
+  // General Chat state
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [streamBuffer, setStreamBuffer] = useState('');
@@ -30,21 +60,304 @@ export default function NotebookPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Share ACL Modal State
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [sharedUsers, setSharedUsers] = useState<NotebookUser[]>([]);
+  const [sharedUsersLoading, setSharedUsersLoading] = useState(false);
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [userSearchResults, setUserSearchResults] = useState<User[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [invitePermission, setInvitePermission] = useState('user');
+  const [generatedInviteLink, setGeneratedInviteLink] = useState('');
+  const [inviteLinkLoading, setInviteLinkLoading] = useState(false);
+
+  // Document Viewer Sidebar (Right Drawer)
+  const [viewerDoc, setViewerDoc] = useState<Document | null>(null);
+  const [viewerLoading, setViewerLoading] = useState(false);
+  const [viewerText, setViewerText] = useState<string>('');
+  const [viewerPages, setViewerPages] = useState<{ pageNumber: number | null; text: string }[]>([]);
+  const [viewerSearch, setViewerSearch] = useState('');
+  const [viewerHighlightPage, setViewerHighlightPage] = useState<number | null>(null);
+
+  // Citation Detail Modal
+  const [activeCitation, setActiveCitation] = useState<Source | null>(null);
+
   useEffect(() => {
-    if (!localStorage.getItem('docchat_token')) { router.replace('/login'); return; }
+    const token = localStorage.getItem('docchat_token');
+    const userStr = localStorage.getItem('docchat_user');
+    if (!token || !userStr) {
+      router.replace('/login');
+      return;
+    }
+    const userObj = JSON.parse(userStr) as User;
+    setMe(userObj);
+    setPasswordChangedState(userObj.password_changed);
     loadDocs();
+    loadConvs();
   }, [notebookId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamBuffer]);
+  }, [renderedMessages, streamBuffer]);
 
+  // Re-render conversation history path whenever selected versions or complete messages set updates
+  useEffect(() => {
+    if (allMessages.length === 0) {
+      setRenderedMessages([]);
+      return;
+    }
+    
+    // Group children by parent_id
+    const childrenMap: Record<string, Message[]> = {};
+    allMessages.forEach(m => {
+      const pid = m.parent_id === null ? 'root' : m.parent_id.toString();
+      if (!childrenMap[pid]) childrenMap[pid] = [];
+      childrenMap[pid].push(m);
+    });
+
+    const activePath: Message[] = [];
+    let currentParent = 'root';
+
+    while (childrenMap[currentParent] && childrenMap[currentParent].length > 0) {
+      const siblings = childrenMap[currentParent];
+      siblings.sort((a, b) => a.id - b.id); // sort by creation ID
+
+      // Determine which version/sibling is selected
+      const selectKey = Number(currentParent === 'root' ? 0 : currentParent);
+      const selectedIdx = selectedVersions[selectKey] ?? (siblings.length - 1);
+      const chosen = siblings[selectedIdx] || siblings[siblings.length - 1];
+
+      activePath.push(chosen);
+      currentParent = chosen.id.toString();
+    }
+
+    setRenderedMessages(activePath);
+  }, [allMessages, selectedVersions]);
+
+  // ── Loaders ────────────────────────────────────────────────────────────────
   async function loadDocs() {
     try {
       const data = await getDocuments(notebookId);
       setDocs(data.documents);
-    } catch { router.replace('/login'); }
-    finally { setDocsLoading(false); }
+      
+      // Check if logged-in user is creator of this notebook
+      // In getNotebooks, it returns notebooks. Since we only have document listing, we can query notebooks or check ACL.
+      const userStr = localStorage.getItem('docchat_user');
+      if (userStr) {
+        const meUser = JSON.parse(userStr) as User;
+        if (meUser.role === 'admin') {
+          setIsCreator(true);
+        } else {
+          // Check notebooks in list
+          const { getNotebooks } = await import('@/lib/api');
+          const nbs = await getNotebooks();
+          const currentNotebook = nbs.notebooks.find(n => n.id === notebookId);
+          // If we created it, we are creator. Otherwise we check if we have a notebook ACL
+          if (currentNotebook) {
+            setIsCreator(true);
+          } else {
+            setIsCreator(false);
+          }
+        }
+      }
+      
+      // Default select all documents
+      const defaults: Record<number, boolean> = {};
+      data.documents.forEach(d => { defaults[d.id] = true; });
+      setSelectedDocs(defaults);
+    } catch {
+      router.replace('/login');
+    } finally {
+      setDocsLoading(false);
+    }
+  }
+
+  async function loadConvs() {
+    try {
+      const data = await getConversations(notebookId);
+      setConversations(data.conversations);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setConvsLoading(false);
+    }
+  }
+
+  async function selectConversation(convId: number) {
+    newConversation();
+    setConversationId(convId);
+    try {
+      const data = await getMessages(convId);
+      setAllMessages(data.messages);
+      // Reset version switchers to defaults
+      setSelectedVersions({});
+    } catch (err: any) {
+      alert(err.message || 'Error al cargar mensajes');
+    }
+  }
+
+  // ── ACL sharing data loader ────────────────────────────────────────────────
+  async function loadShareAcl() {
+    setShowShareModal(true);
+    setSharedUsersLoading(true);
+    try {
+      const usersData = await getNotebookUsers(notebookId);
+      setSharedUsers(usersData.users);
+    } catch (err: any) {
+      alert(err.message || 'Error al cargar compartidos');
+    } finally {
+      setSharedUsersLoading(false);
+    }
+  }
+
+  // User Autocomplete Search
+  useEffect(() => {
+    if (userSearchQuery.trim().length < 2) {
+      setUserSearchResults([]);
+      return;
+    }
+    const delayDebounce = setTimeout(async () => {
+      setSearchLoading(true);
+      try {
+        const results = await searchUsers(userSearchQuery);
+        setUserSearchResults(results.users);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(delayDebounce);
+  }, [userSearchQuery]);
+
+  async function handleAddNotebookUser(userId: number, role: string) {
+    try {
+      await addNotebookUser(notebookId, userId, role);
+      setUserSearchQuery('');
+      setUserSearchResults([]);
+      // Reload sharing list
+      const usersData = await getNotebookUsers(notebookId);
+      setSharedUsers(usersData.users);
+    } catch (err: any) {
+      alert(err.message || 'Error al agregar usuario');
+    }
+  }
+
+  async function handleRemoveNotebookUser(userId: number) {
+    if (!confirm('¿Quitar acceso a este notebook para este usuario?')) return;
+    try {
+      await removeNotebookUser(notebookId, userId);
+      setSharedUsers(prev => prev.filter(u => u.user_id !== userId));
+    } catch (err: any) {
+      alert(err.message || 'Error al remover acceso');
+    }
+  }
+
+  async function handleCreateInvitationLink() {
+    setInviteLinkLoading(true);
+    try {
+      const res = await createInvitation(notebookId, invitePermission, 30); // 30 days
+      const claimUrl = `${window.location.origin}/notebooks/invite/${res.token}`;
+      setGeneratedInviteLink(claimUrl);
+    } catch (err: any) {
+      alert(err.message || 'Error al crear enlace');
+    } finally {
+      setInviteLinkLoading(false);
+    }
+  }
+
+  // ── Document Viewer Panel (Slide Drawer) ────────────────────────────────────
+  async function handleOpenDocumentViewer(doc: Document) {
+    setViewerDoc(doc);
+    setViewerLoading(true);
+    setViewerText('');
+    setViewerPages([]);
+    setViewerSearch('');
+    setViewerHighlightPage(null);
+    try {
+      const res = await getDocument(doc.id);
+      const rawText = res.document.raw_text || 'Documento sin texto extraído.';
+      setViewerText(rawText);
+
+      // Split into pages based on delimiter
+      const pageRegex = /--- PAGE_BREAK_P_(\d+) ---/g;
+      const pagesList: { pageNumber: number | null; text: string }[] = [];
+      let match;
+      let lastIndex = 0;
+      let currentPageNum: number | null = null;
+
+      while ((match = pageRegex.exec(rawText)) !== null) {
+        const matchIndex = match.index;
+        if (matchIndex > lastIndex) {
+          const segment = rawText.slice(lastIndex, matchIndex).trim();
+          if (segment) {
+            pagesList.push({ pageNumber: currentPageNum, text: segment });
+          }
+        }
+        currentPageNum = parseInt(match[1], 10);
+        lastIndex = pageRegex.lastIndex;
+      }
+      if (lastIndex < rawText.length) {
+        const segment = rawText.slice(lastIndex).trim();
+        if (segment) {
+          pagesList.push({ pageNumber: currentPageNum, text: segment });
+        }
+      }
+      if (pagesList.length === 0) {
+        pagesList.push({ pageNumber: null, text: rawText });
+      }
+      setViewerPages(pagesList);
+    } catch (err: any) {
+      alert(err.message || 'Error al abrir visor');
+      setViewerDoc(null);
+    } finally {
+      setViewerLoading(false);
+    }
+  }
+
+  function handleCitationClick(cite: Source) {
+    // 1. Find matching document from docs list
+    const matchedDoc = docs.find(d => d.name === cite.document_name);
+    if (!matchedDoc) {
+      // If document is deleted or not found, just show excerpt in citation modal
+      setActiveCitation(cite);
+      return;
+    }
+
+    // 2. Open viewer
+    handleOpenDocumentViewer(matchedDoc).then(() => {
+      // 3. Scroll to page element once viewer text is populated!
+      if (cite.page_number) {
+        setViewerHighlightPage(cite.page_number);
+        setTimeout(() => {
+          const el = document.getElementById(`viewer-page-${cite.page_number}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }, 800);
+      }
+    });
+  }
+
+  // Helper to split document text into pages and highlight occurrences
+  function renderViewerPageContent(text: string, search: string) {
+    if (!search.trim()) return <p className="whitespace-pre-wrap leading-relaxed text-sm select-text text-gray-700">{text}</p>;
+
+    // Regex to match search string safely
+    const escaped = search.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+    const regex = new RegExp(`(${escaped})`, 'gi');
+    const parts = text.split(regex);
+
+    return (
+      <p className="whitespace-pre-wrap leading-relaxed text-sm select-text text-gray-700">
+        {parts.map((part, i) => 
+          regex.test(part) ? (
+            <mark key={i} className="bg-yellow-200 text-gray-900 font-semibold rounded px-0.5">{part}</mark>
+          ) : part
+        )}
+      </p>
+    );
   }
 
   // ── Upload file ──────────────────────────────────────────────────────────────
@@ -55,6 +368,10 @@ export default function NotebookPage() {
     try {
       const data = await uploadDocument(notebookId, file, setUploadProgress);
       setDocs(prev => [data.document, ...prev]);
+      
+      // Select newly uploaded file by default
+      setSelectedDocs(prev => ({ ...prev, [data.document.id]: true }));
+      loadDocs(); // refresh list to load fragment counts once parsed
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Error al subir');
     } finally {
@@ -71,7 +388,9 @@ export default function NotebookPage() {
     try {
       const data = await ingestUrl(notebookId, urlInput.trim());
       setDocs(prev => [data.document, ...prev]);
+      setSelectedDocs(prev => ({ ...prev, [data.document.id]: true }));
       setUrlInput('');
+      loadDocs();
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Error al ingestar URL');
     } finally {
@@ -84,53 +403,142 @@ export default function NotebookPage() {
     if (!confirm('¿Eliminar este documento?')) return;
     await deleteDocument(docId);
     setDocs(prev => prev.filter(d => d.id !== docId));
+    setSelectedDocs(prev => {
+      const updated = { ...prev };
+      delete updated[docId];
+      return updated;
+    });
   }
 
-  // ── Send chat ────────────────────────────────────────────────────────────────
-  async function handleSend() {
-    const text = input.trim();
+  // Toggle Single Document Checkbox
+  function toggleDocSelection(docId: number) {
+    setSelectedDocs(prev => ({ ...prev, [docId]: !prev[docId] }));
+  }
+
+  // Toggle All Documents Checkboxes
+  function toggleAllDocs(select: boolean) {
+    const updated: Record<number, boolean> = {};
+    docs.forEach(d => { updated[d.id] = select; });
+    setSelectedDocs(updated);
+  }
+
+  // ── Change Password (Profile) ──────────────────────────────────────────────
+  async function handlePasswordChange(e: React.FormEvent) {
+    e.preventDefault();
+    setProfileError('');
+    setProfileSuccess('');
+    if (newPassword.length < 4) {
+      setProfileError('La contraseña debe tener al menos 4 caracteres');
+      return;
+    }
+    setProfileLoading(true);
+    try {
+      await changePassword(newPassword);
+      setProfileSuccess('Contraseña cambiada con éxito');
+      setNewPassword('');
+      setPasswordChangedState(true);
+      if (me) {
+        const updated = { ...me, password_changed: true };
+        setMe(updated);
+        localStorage.setItem('docchat_user', JSON.stringify(updated));
+      }
+    } catch (err: any) {
+      setProfileError(err.message || 'Error al cambiar contraseña');
+    } finally {
+      setProfileLoading(false);
+    }
+  }
+
+  // ── Send chat (SSE streaming) ───────────────────────────────────────────────
+  async function handleSend(textInput?: string, parentIdOverride?: number | null) {
+    const text = (textInput ?? input).trim();
     if (!text || streaming) return;
-    setInput('');
+    if (!textInput) setInput('');
     setSources([]);
 
+    // Document Context IDs Filter
+    const activeDocIds = Object.keys(selectedDocs)
+      .map(Number)
+      .filter(id => selectedDocs[id]);
+
+    const activeParentId = parentIdOverride !== undefined ? parentIdOverride : (renderedMessages.length > 0 ? renderedMessages[renderedMessages.length - 1].id : null);
+
+    // Optimistically push client-side user message node
+    const clientUserMsgId = Date.now();
     const userMsg: Message = {
-      id: Date.now(),
+      id: clientUserMsgId,
       conversation_id: conversationId ?? 0,
       role: 'user',
       content: text,
+      parent_id: activeParentId,
       sources: null,
       created_at: new Date().toISOString(),
     };
-    setMessages(prev => [...prev, userMsg]);
+    
+    // Add User Message to full Dialogue Tree
+    setAllMessages(prev => [...prev, userMsg]);
     setStreaming(true);
     setStreamBuffer('');
 
-    await sendChat(notebookId, text, conversationId, {
-      onMeta: (cid) => setConversationId(cid),
+    await sendChat(notebookId, text, conversationId, activeParentId, activeDocIds.length > 0 ? activeDocIds : null, {
+      onMeta: (cid) => {
+        setConversationId(cid);
+        // Refresh conversations list in background
+        loadConvs();
+      },
       onDelta: (delta) => setStreamBuffer(prev => prev + delta),
-      onDone: (srcs) => {
+      onDone: (srcs, generatedTitle) => {
         setSources(srcs);
         setStreamBuffer(prev => {
+          // Create assistant message node
           const assistantMsg: Message = {
             id: Date.now() + 1,
             conversation_id: conversationId ?? 0,
             role: 'assistant',
             content: prev,
+            parent_id: clientUserMsgId, // child of the optimistic user message ID
             sources: srcs,
             created_at: new Date().toISOString(),
           };
-          setMessages(m => [...m, assistantMsg]);
+          
+          // Re-fetch complete dialogue nodes from backend to sync up perfectly (keeps IDs matching exactly!)
+          if (conversationId) {
+            getMessages(conversationId).then(data => {
+              setAllMessages(data.messages);
+            });
+          } else {
+            // First exchange: let's do a hard fetch in a second to sync conversationId
+            setTimeout(() => {
+              const activeConvId = localStorage.getItem('docchat_active_conv');
+              const realId = activeConvId ? Number(activeConvId) : null;
+              if (realId) {
+                getMessages(realId).then(data => {
+                  setAllMessages(data.messages);
+                  setConversationId(realId);
+                });
+                loadConvs();
+              }
+            }, 1000);
+          }
+          
           return '';
         });
+        
+        // Cache conversationId so async first exchange resolves it
+        if (conversationId) {
+          localStorage.setItem('docchat_active_conv', conversationId.toString());
+        }
+
         setStreaming(false);
       },
       onError: (msg) => {
         setStreamBuffer('');
-        setMessages(m => [...m, {
-          id: Date.now() + 1,
+        setAllMessages(m => [...m, {
+          id: Date.now() + 2,
           conversation_id: conversationId ?? 0,
           role: 'assistant',
           content: `Error: ${msg}`,
+          parent_id: clientUserMsgId,
           sources: null,
           created_at: new Date().toISOString(),
         }]);
@@ -139,172 +547,429 @@ export default function NotebookPage() {
     });
   }
 
+  // Handle Edit User Message (Dialogue Branching)
+  async function handleConfirmEdit(msgId: number) {
+    const text = editingText.trim();
+    if (!text) return;
+    
+    // Find the message being edited
+    const originalMsg = allMessages.find(m => m.id === msgId);
+    if (!originalMsg) return;
+
+    setEditingMsgId(null);
+    setEditingText('');
+
+    // Trigger sendChat with the parentId of the edited message!
+    await handleSend(text, originalMsg.parent_id);
+  }
+
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   }
 
   function newConversation() {
     setConversationId(null);
-    setMessages([]);
+    setAllMessages([]);
+    setRenderedMessages([]);
+    setSelectedVersions({});
     setSources([]);
     setStreamBuffer('');
+  }
+
+  // ── Custom Safe Markdown Renderer ──────────────────────────────────────────
+  function renderMarkdown(text: string) {
+    if (!text) return '';
+    
+    // Clean HTML tags to prevent injection (strict XSS prevention)
+    let html = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Fenced Code blocks
+    html = html.replace(/```([\s\S]*?)```/g, (_, code) => {
+      return `<pre class="bg-gray-800 text-gray-100 p-4 rounded-xl font-mono text-xs overflow-x-auto my-3 border border-gray-700 select-text">${code.trim()}</pre>`;
+    });
+
+    // Inline Code
+    html = html.replace(/`([^`\n]+)`/g, '<code class="bg-gray-100 text-indigo-600 px-1.5 py-0.5 rounded font-mono text-xs border border-gray-200">$1</code>');
+
+    // Bold
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong class="font-bold text-gray-900">$1</strong>');
+
+    // Headers
+    html = html.replace(/^### (.*$)/gim, '<h4 class="text-xs font-bold text-gray-900 mt-4 mb-2 select-none uppercase tracking-wider">$1</h4>');
+    html = html.replace(/^## (.*$)/gim, '<h3 class="text-sm font-bold text-gray-900 mt-5 mb-2.5 select-none">$1</h3>');
+    html = html.replace(/^# (.*$)/gim, '<h2 class="text-base font-bold text-gray-900 mt-6 mb-3 select-none border-b border-gray-100 pb-1">$1</h2>');
+
+    // Lists
+    html = html.replace(/^\s*[-*]\s+(.*$)/gim, '<li class="ml-4 list-disc text-gray-700 leading-relaxed">$1</li>');
+
+    // Paragraph returns
+    html = html.replace(/\n/g, '<br />');
+
+    return <div className="space-y-1 text-sm text-gray-800 select-text leading-relaxed select-text" dangerouslySetInnerHTML={{ __html: html }} />;
+  }
+
+  // ── Dialogue Sibling Switcher Helper ────────────────────────────────────────
+  function renderVersionSelector(msg: Message) {
+    // Find siblings (messages sharing the same parent_id)
+    const siblings = allMessages
+      .filter(m => m.parent_id === msg.parent_id)
+      .sort((a, b) => a.id - b.id);
+
+    if (siblings.length <= 1) return null;
+
+    const currentIdx = siblings.findIndex(s => s.id === msg.id);
+    const selectKey = msg.parent_id === null ? 0 : msg.parent_id;
+
+    function handleSwitch(idx: number) {
+      if (idx < 0 || idx >= siblings.length) return;
+      setSelectedVersions(prev => ({
+        ...prev,
+        [selectKey]: idx
+      }));
+    }
+
+    return (
+      <div className="flex items-center gap-2 mt-2 select-none text-[10px] font-bold text-gray-400">
+        <button
+          onClick={() => handleSwitch(currentIdx - 1)}
+          disabled={currentIdx === 0}
+          className="hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-gray-400 transition-colors"
+        >
+          ◀
+        </button>
+        <span>{currentIdx + 1} / {siblings.length}</span>
+        <button
+          onClick={() => handleSwitch(currentIdx + 1)}
+          disabled={currentIdx === siblings.length - 1}
+          className="hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-gray-400 transition-colors"
+        >
+          ▶
+        </button>
+      </div>
+    );
   }
 
   const typeIcon: Record<string, string> = { pdf: '📄', docx: '📝', txt: '📃', url: '🔗' };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
-        <button onClick={() => router.push('/notebooks')} className="text-gray-400 hover:text-gray-700 transition-colors">
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+    <div className="flex flex-col h-screen bg-gray-50 text-gray-800 font-sans overflow-hidden">
+      
+      {/* Warning Safety Banner */}
+      {!passwordChangedState && (
+        <div className="bg-amber-500 text-white font-medium text-xs sm:text-sm text-center py-2 px-4 flex items-center justify-center gap-2 shadow-sm border-b border-amber-600 z-25">
+          <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
-        </button>
-        <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center">
-          <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
+          <span>
+            <strong>Atención de Seguridad:</strong> Debés cambiar tu clave genérica desde <strong>Mi Perfil</strong> antes de cumplirse las 48hs de plazo para evitar la suspensión de tu cuenta.
+          </span>
         </div>
-        <span className="font-semibold text-gray-900">DocChat</span>
-        <span className="text-gray-300 text-lg">/</span>
-        <span className="text-gray-600 text-sm">Notebook #{notebookId}</span>
-      </header>
+      )}
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* ── Left sidebar: Documents ─────────────────────────────────────────── */}
-        <aside className="w-72 bg-white border-r border-gray-200 flex flex-col">
-          <div className="p-4 border-b border-gray-100">
-            <h3 className="font-semibold text-sm text-gray-900 mb-3">Documentos</h3>
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-sm z-20">
+        <div className="flex items-center gap-3">
+          <button onClick={() => router.push('/notebooks')} className="text-gray-400 hover:text-gray-700 transition-colors">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+            </svg>
+          </button>
+          <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-md shadow-indigo-100">
+            <svg className="w-4.5 h-4.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <div className="flex flex-col">
+            <span className="font-bold text-sm text-gray-900 leading-tight">DocChat</span>
+            <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Notebook #{notebookId}</span>
+          </div>
+        </div>
 
-            {/* Upload file */}
-            <input ref={fileRef} type="file" accept=".pdf,.docx,.doc,.txt,.md" className="hidden" onChange={handleFileChange} />
+        <div className="flex items-center gap-3">
+          {isCreator && (
             <button
-              onClick={() => fileRef.current?.click()}
-              disabled={uploadProgress !== null}
-              className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-gray-300 hover:border-indigo-400 rounded-lg py-2.5 text-sm text-gray-500 hover:text-indigo-600 transition-colors disabled:opacity-50"
+              onClick={loadShareAcl}
+              className="flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold px-3 py-2 rounded-xl transition-all"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 10.742a3 3 0 110-2.284 3 3 0 010 2.284zM2 17h18a2 2 0 002-2v-.5a7 7 0 00-14 0V15a2 2 0 002 2z" />
               </svg>
-              {uploadProgress !== null ? `Subiendo ${uploadProgress}%...` : 'Subir PDF / DOCX / TXT'}
+              <span>Compartir</span>
             </button>
+          )}
 
-            {uploadProgress !== null && (
-              <div className="mt-2 bg-gray-100 rounded-full h-1.5">
-                <div className="bg-indigo-600 h-1.5 rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
+          {me && (
+            <button
+              onClick={() => setShowProfile(true)}
+              className="flex items-center gap-1.5 hover:bg-gray-50 text-gray-700 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-gray-200 transition-all"
+            >
+              <div className="w-5 h-5 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center font-bold text-[10px]">
+                {me.username.slice(1, 3).toUpperCase()}
               </div>
-            )}
+              <span className="hidden sm:inline font-semibold">{me.full_name || me.username}</span>
+            </button>
+          )}
+        </div>
+      </header>
 
-            {/* URL ingest */}
-            <form onSubmit={handleUrlIngest} className="mt-2 flex gap-1.5">
-              <input
-                type="url"
-                value={urlInput}
-                onChange={e => setUrlInput(e.target.value)}
-                placeholder="https://..."
-                className="flex-1 border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
+      {/* Main Panel Content */}
+      <div className="flex flex-1 overflow-hidden relative">
+        
+        {/* ── Left Sidebar: Documents & Checkboxes ────────────────────────────── */}
+        <aside className="w-72 bg-white border-r border-gray-200 flex flex-col flex-shrink-0 z-10">
+          
+          {/* Notebook Role Controls */}
+          {me?.role !== 'user' && (
+            <div className="p-4 border-b border-gray-100 space-y-3 bg-gray-50/50">
+              <h3 className="font-bold text-xs text-gray-500 uppercase tracking-wider select-none">Cargar Recursos</h3>
+
+              {/* Upload file */}
+              <input ref={fileRef} type="file" accept=".pdf,.docx,.doc,.txt,.md" className="hidden" onChange={handleFileChange} />
               <button
-                type="submit"
-                disabled={urlLoading}
-                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-medium px-2.5 py-1.5 rounded-lg transition-colors"
+                onClick={() => fileRef.current?.click()}
+                disabled={uploadProgress !== null}
+                className="w-full flex items-center justify-center gap-2 border border-dashed border-gray-300 bg-white hover:bg-gray-50 hover:border-indigo-400 rounded-xl py-2 text-xs font-semibold text-gray-600 hover:text-indigo-600 transition-all disabled:opacity-50 shadow-sm"
               >
-                {urlLoading ? '...' : 'URL'}
+                <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                {uploadProgress !== null ? `Subiendo ${uploadProgress}%...` : 'Subir Archivo'}
               </button>
-            </form>
-          </div>
 
-          {/* Doc list */}
-          <div className="flex-1 overflow-y-auto p-2">
-            {docsLoading ? (
-              <div className="flex justify-center py-6">
-                <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-              </div>
-            ) : docs.length === 0 ? (
-              <p className="text-xs text-gray-400 text-center py-6">Sin documentos todavía</p>
-            ) : (
-              docs.map(doc => (
-                <div key={doc.id} className="flex items-start gap-2 px-2 py-2 rounded-lg hover:bg-gray-50 group">
-                  <span className="text-base leading-none mt-0.5">{typeIcon[doc.type] ?? '📄'}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-gray-800 truncate">{doc.name}</p>
-                    <p className="text-xs text-gray-400">
-                      {doc.chunk_count > 0 ? `${doc.chunk_count} fragmentos` : 'procesando…'}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => handleDeleteDoc(doc.id)}
-                    className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 mt-0.5"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
+              {uploadProgress !== null && (
+                <div className="w-full bg-gray-150 rounded-full h-1">
+                  <div className="bg-indigo-600 h-1 rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
                 </div>
-              ))
-            )}
+              )}
+
+              {/* URL ingest */}
+              <form onSubmit={handleUrlIngest} className="flex gap-1.5">
+                <input
+                  type="url"
+                  value={urlInput}
+                  onChange={e => setUrlInput(e.target.value)}
+                  placeholder="Insertar URL (cheerio)"
+                  className="flex-1 border border-gray-300 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                />
+                <button
+                  type="submit"
+                  disabled={urlLoading}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition-all shadow-sm"
+                >
+                  {urlLoading ? '...' : 'URL'}
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* Documents Selection & List */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div className="flex items-center justify-between select-none">
+              <h3 className="font-bold text-xs text-gray-500 uppercase tracking-wider">Documentos ({docs.length})</h3>
+              {docs.length > 0 && (
+                <div className="flex gap-2 text-[10px] font-bold text-indigo-600 hover:text-indigo-800">
+                  <button onClick={() => toggleAllDocs(true)}>Todos</button>
+                  <span className="text-gray-300">|</span>
+                  <button onClick={() => toggleAllDocs(false)}>Ninguno</button>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              {docsLoading ? (
+                <div className="flex justify-center py-8">
+                  <div className="w-6 h-6 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : docs.length === 0 ? (
+                <p className="text-xs text-gray-400 text-center py-8 font-medium">Sin documentos todavía.</p>
+              ) : (
+                docs.map(doc => (
+                  <div
+                    key={doc.id}
+                    className={`flex items-start gap-2.5 p-2 rounded-xl border hover:bg-gray-50/50 transition-all group select-none ${selectedDocs[doc.id] ? 'border-indigo-100 bg-indigo-50/10' : 'border-transparent'}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!selectedDocs[doc.id]}
+                      onChange={() => toggleDocSelection(doc.id)}
+                      className="mt-0.5 w-3.5 h-3.5 rounded text-indigo-600 border-gray-300 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0 cursor-pointer" onClick={() => handleOpenDocumentViewer(doc)}>
+                      <p className="text-xs font-bold text-gray-800 truncate group-hover:text-indigo-600 transition-colors" title={doc.name}>
+                        {typeIcon[doc.type] ?? '📄'} {doc.name}
+                      </p>
+                      <p className="text-[10px] text-gray-400 font-semibold mt-0.5">
+                        {doc.chunk_count > 0 ? `${doc.chunk_count} fragmentos` : 'Procesando embeddings…'}
+                      </p>
+                    </div>
+                    {me?.role !== 'user' && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
+                        className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </aside>
 
-        {/* ── Main: Chat ──────────────────────────────────────────────────────── */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          {/* Chat toolbar */}
-          <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between">
-            <span className="text-sm text-gray-500">
-              {conversationId ? `Conversación #${conversationId}` : 'Nueva conversación'}
-            </span>
-            {messages.length > 0 && (
-              <button onClick={newConversation} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition-colors">
-                + Nueva conversación
+        {/* ── Center: Chat Dialogue ─────────────────────────────────────────── */}
+        <main className="flex-1 flex flex-col overflow-hidden bg-white z-0">
+          
+          {/* Chat Toolbar: Conversation switcher dropdown */}
+          <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between shadow-sm select-none">
+            <div className="flex items-center gap-3">
+              <select
+                value={conversationId ?? ''}
+                onChange={e => {
+                  const val = e.target.value;
+                  if (val) selectConversation(Number(val));
+                  else newConversation();
+                }}
+                className="border border-gray-300 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white font-semibold text-gray-700 max-w-[200px]"
+              >
+                <option value="">+ Nueva Conversación</option>
+                {conversations.map(c => (
+                  <option key={c.id} value={c.id}>
+                    💬 {c.title || `Chat #${c.id}`}
+                  </option>
+                ))}
+              </select>
+              {convsLoading && <div className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />}
+            </div>
+
+            {renderedMessages.length > 0 && (
+              <button
+                onClick={newConversation}
+                className="text-xs text-indigo-600 hover:text-indigo-800 font-bold transition-colors"
+              >
+                + Limpiar Pantalla
               </button>
             )}
           </div>
 
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-            {messages.length === 0 && !streaming && (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-2">
-                <svg className="w-10 h-10 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-                </svg>
-                <p className="text-sm font-medium">Hacé una pregunta sobre tus documentos</p>
-                <p className="text-xs">Subí al menos un documento para empezar</p>
+          {/* Messages Display (Tree rendering active branch) */}
+          <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6 bg-gray-50/20">
+            {renderedMessages.length === 0 && !streaming && (
+              <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-3.5 text-center select-none animate-fade-in">
+                <div className="w-16 h-16 bg-indigo-50/50 text-indigo-500 rounded-2xl flex items-center justify-center shadow-inner">
+                  <svg className="w-9 h-9" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                  </svg>
+                </div>
+                <div className="space-y-1">
+                  <p className="font-bold text-gray-800 text-base">Hacé una pregunta sobre tus documentos</p>
+                  <p className="text-xs text-gray-400 max-w-xs leading-relaxed">
+                    La IA buscará en las páginas de tus archivos seleccionados y responderá con citas detalladas
+                  </p>
+                </div>
               </div>
             )}
 
-            {messages.map(msg => (
-              <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                  msg.role === 'user'
-                    ? 'bg-indigo-600 text-white rounded-br-sm'
-                    : 'bg-white border border-gray-200 text-gray-800 rounded-bl-sm shadow-sm'
-                }`}>
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
-                  {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-gray-100 space-y-1">
-                      {msg.sources.map((s, i) => (
-                        <p key={i} className="text-xs text-gray-400">
-                          📎 {s.document_name}{s.page_number ? ` · p.${s.page_number}` : ''} · {Math.round(s.similarity * 100)}%
-                        </p>
-                      ))}
-                    </div>
-                  )}
+            {renderedMessages.map(msg => (
+              <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in`}>
+                <div className={`max-w-[78%] group relative flex flex-col`}>
+                  
+                  <div className={`rounded-2xl px-4 py-3 shadow-sm border ${
+                    msg.role === 'user'
+                      ? 'bg-indigo-600 text-white rounded-br-sm border-indigo-600'
+                      : 'bg-white border-gray-200 text-gray-800 rounded-bl-sm shadow-gray-100'
+                  }`}>
+                    
+                    {/* User Edit Box */}
+                    {editingMsgId === msg.id ? (
+                      <div className="space-y-2 py-1 select-text">
+                        <textarea
+                          value={editingText}
+                          onChange={e => setEditingText(e.target.value)}
+                          className="w-full text-sm text-gray-800 bg-white border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-sans resize-none"
+                          rows={2}
+                        />
+                        <div className="flex gap-2 justify-end">
+                          <button
+                            onClick={() => handleConfirmEdit(msg.id)}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold px-3 py-1.5 rounded-lg transition-all"
+                          >
+                            Reenviar y Recalcular
+                          </button>
+                          <button
+                            onClick={() => { setEditingMsgId(null); setEditingText(''); }}
+                            className="bg-gray-100 hover:bg-gray-200 text-gray-600 text-[11px] font-bold px-3 py-1.5 rounded-lg transition-all"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Text rendering */}
+                        {msg.role === 'user' ? (
+                          <p className="whitespace-pre-wrap text-sm leading-relaxed select-text">{msg.content}</p>
+                        ) : (
+                          renderMarkdown(msg.content)
+                        )}
+
+                        {/* Citation Links */}
+                        {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
+                          <div className="mt-3.5 pt-3 border-t border-gray-100 space-y-1.5 select-none">
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Fuentes utilizadas:</p>
+                            {msg.sources.map((s, i) => (
+                              <button
+                                key={i}
+                                onClick={() => handleCitationClick(s)}
+                                className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-bold transition-colors text-left bg-indigo-50/20 hover:bg-indigo-50/60 border border-indigo-100/40 rounded-lg px-2 py-1"
+                              >
+                                📎 {s.document_name}
+                                {s.page_number ? ` · pág. ${s.page_number}` : ''} 
+                                <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider ml-1">({Math.round(s.similarity * 100)}%)</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  {/* Sibling Version Switche & User Edit Trigger */}
+                  <div className={`flex items-center justify-between mt-1 px-1`}>
+                    {renderVersionSelector(msg)}
+                    
+                    {msg.role === 'user' && editingMsgId !== msg.id && (
+                      <button
+                        onClick={() => { setEditingMsgId(msg.id); setEditingText(msg.content); }}
+                        className="text-[10px] font-bold text-gray-400 hover:text-indigo-600 transition-colors opacity-0 group-hover:opacity-100 ml-auto flex items-center gap-1"
+                      >
+                        ✏️ Editar
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
 
-            {/* Streaming bubble */}
+            {/* Streaming Bubble */}
             {streaming && (
-              <div className="flex justify-start">
-                <div className="max-w-[75%] bg-white border border-gray-200 rounded-2xl rounded-bl-sm px-4 py-3 text-sm shadow-sm">
+              <div className="flex justify-start animate-fade-in">
+                <div className="max-w-[78%] bg-white border border-gray-200 rounded-2xl rounded-bl-sm px-4 py-3 shadow-sm shadow-gray-50 flex flex-col">
                   {streamBuffer ? (
-                    <p className="whitespace-pre-wrap text-gray-800">{streamBuffer}<span className="inline-block w-1.5 h-4 bg-indigo-500 ml-0.5 animate-pulse rounded-sm" /></p>
+                    <>
+                      {renderMarkdown(streamBuffer)}
+                      <span className="inline-block w-1.5 h-4 bg-indigo-500 ml-0.5 animate-pulse rounded-sm self-start mt-1" />
+                    </>
                   ) : (
-                    <div className="flex gap-1 items-center py-1">
-                      <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    <div className="flex gap-1.5 items-center py-2 select-none">
+                      <span className="w-2.5 h-2.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-2.5 h-2.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-2.5 h-2.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                     </div>
                   )}
                 </div>
@@ -314,18 +979,21 @@ export default function NotebookPage() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Input */}
-          <div className="bg-white border-t border-gray-200 p-3">
+          {/* Chat Form Textarea */}
+          <div className="bg-white border-t border-gray-200 p-4 sticky bottom-0 z-10 shadow-md">
+            
+            {/* Show Citations Context previews before sending */}
             {sources.length > 0 && (
-              <div className="mb-2 flex gap-2 overflow-x-auto pb-1">
+              <div className="mb-3.5 flex gap-2 overflow-x-auto pb-1.5 select-none">
                 {sources.map((s, i) => (
-                  <span key={i} className="flex-shrink-0 text-xs bg-indigo-50 text-indigo-700 rounded-full px-2.5 py-1 border border-indigo-100">
+                  <span key={i} className="flex-shrink-0 text-xs bg-indigo-50/50 text-indigo-700 font-semibold rounded-lg px-2.5 py-1 border border-indigo-100/50">
                     {s.document_name}{s.page_number ? ` p.${s.page_number}` : ''}
                   </span>
                 ))}
               </div>
             )}
-            <div className="flex gap-2 items-end">
+
+            <div className="flex gap-3 items-end">
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -333,7 +1001,7 @@ export default function NotebookPage() {
                 onKeyDown={handleKeyDown}
                 placeholder="Preguntá sobre tus documentos… (Enter para enviar)"
                 rows={1}
-                className="flex-1 border border-gray-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none max-h-32"
+                className="flex-1 border border-gray-300 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white font-sans resize-none max-h-32 shadow-inner"
                 style={{ height: 'auto' }}
                 onInput={e => {
                   const t = e.currentTarget;
@@ -342,23 +1010,312 @@ export default function NotebookPage() {
                 }}
               />
               <button
-                onClick={handleSend}
+                onClick={() => handleSend()}
                 disabled={!input.trim() || streaming}
-                className="flex-shrink-0 w-10 h-10 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-xl flex items-center justify-center transition-colors"
+                className="flex-shrink-0 w-11 h-11 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-xl flex items-center justify-center transition-all shadow-md shadow-indigo-100 hover:shadow-indigo-200"
               >
                 {streaming ? (
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                   </svg>
                 )}
               </button>
             </div>
-            <p className="text-xs text-gray-400 mt-1.5 text-center">Enter para enviar · Shift+Enter para nueva línea</p>
+            <p className="text-[10px] text-gray-400 font-semibold mt-2 text-center uppercase tracking-wider select-none">
+              Enter para enviar · Shift+Enter para nueva línea
+            </p>
           </div>
         </main>
+
+        {/* ── Right Panel: Document Viewer (SlideDrawer) ─────────────────────── */}
+        {viewerDoc && (
+          <aside className="w-96 bg-white border-l border-gray-200 flex flex-col flex-shrink-0 z-30 shadow-2xl animate-slide-left relative select-text h-full">
+            
+            {/* Viewer Header */}
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+              <div className="min-w-0">
+                <h3 className="font-bold text-gray-900 truncate text-sm sm:text-base" title={viewerDoc.name}>
+                  👁️ Visor: {viewerDoc.name}
+                </h3>
+                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Modo lectura integrada</p>
+              </div>
+
+              <button onClick={() => setViewerDoc(null)} className="text-gray-400 hover:text-gray-600 transition-colors p-1">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Viewer Search Bar */}
+            <div className="p-3 border-b border-gray-100">
+              <input
+                type="text"
+                value={viewerSearch}
+                onChange={e => setViewerSearch(e.target.value)}
+                placeholder="Buscar términos en este documento..."
+                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            {/* Viewer Content list */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-6 select-text bg-gray-50/10">
+              {viewerLoading ? (
+                <div className="flex flex-col items-center justify-center h-full space-y-3 select-none">
+                  <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs text-gray-400 font-bold uppercase tracking-wider animate-pulse">Cargando Texto...</p>
+                </div>
+              ) : (
+                viewerPages.map((page, i) => (
+                  <div
+                    key={i}
+                    id={`viewer-page-${page.pageNumber || 1}`}
+                    className={`p-4 border rounded-xl space-y-2.5 transition-all select-text ${viewerHighlightPage === page.pageNumber ? 'border-indigo-400 bg-indigo-50/20 shadow-md ring-2 ring-indigo-500/20' : 'border-gray-200 bg-white shadow-sm'}`}
+                  >
+                    <div className="flex items-center justify-between border-b border-gray-50 pb-1.5 select-none">
+                      <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                        Página {page.pageNumber || 1}
+                      </span>
+                      {viewerHighlightPage === page.pageNumber && (
+                        <span className="text-[9px] font-bold bg-indigo-100 text-indigo-700 uppercase px-1.5 py-0.5 rounded">
+                          Referencia Citada
+                        </span>
+                      )}
+                    </div>
+                    {renderViewerPageContent(page.text, viewerSearch)}
+                  </div>
+                ))
+              )}
+            </div>
+          </aside>
+        )}
       </div>
+
+      {/* ─── Profile Modal ──────────────────────────────────────────────────── */}
+      {showProfile && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-xl border border-gray-100 animate-slide-up">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-gray-900 text-lg">Mi Perfil</h3>
+              <button onClick={() => { setShowProfile(false); setProfileError(''); setProfileSuccess(''); }} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="bg-gray-50 rounded-xl p-3 text-xs sm:text-sm font-medium space-y-1">
+              <p className="text-gray-500">Nombre completo: <strong className="text-gray-800">{me?.full_name || 'Sin especificar'}</strong></p>
+              <p className="text-gray-500">Usuario: <strong className="text-gray-800">{me?.username}</strong></p>
+              <p className="text-gray-500">Rol asignado: <strong className="text-gray-800 uppercase tracking-wider">{me?.role}</strong></p>
+            </div>
+
+            <form onSubmit={handlePasswordChange} className="space-y-3.5">
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">Cambiar Contraseña</label>
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={e => setNewPassword(e.target.value)}
+                  placeholder="Nueva contraseña"
+                  className="w-full border border-gray-300 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all"
+                  required
+                />
+              </div>
+
+              {profileError && <p className="text-xs text-red-600 bg-red-50 rounded-lg p-2.5 font-medium">{profileError}</p>}
+              {profileSuccess && <p className="text-xs text-green-600 bg-green-50 rounded-lg p-2.5 font-medium">{profileSuccess}</p>}
+
+              <button
+                type="submit"
+                disabled={profileLoading}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl py-2.5 text-sm transition-all shadow-md shadow-indigo-100"
+              >
+                {profileLoading ? 'Guardando...' : 'Cambiar Contraseña'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Share ACL / Invitations Modal ──────────────────────────────────── */}
+      {showShareModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-40 animate-fade-in">
+          <div className="bg-white rounded-2xl w-full max-w-xl flex flex-col shadow-2xl border border-gray-100 overflow-hidden animate-slide-up">
+            
+            {/* Modal Header */}
+            <div className="px-6 py-4.5 border-b border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">🔗</span>
+                <h3 className="font-bold text-gray-900 text-lg">Compartir Notebook</h3>
+              </div>
+              <button onClick={() => { setShowShareModal(false); setUserSearchQuery(''); setUserSearchResults([]); setGeneratedInviteLink(''); }} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-6 overflow-y-auto max-h-[75vh]">
+              
+              {/* SECTION 1: LINK GENERATOR */}
+              <div className="space-y-3">
+                <h4 className="font-bold text-gray-900 text-sm">Generar Enlace de Invitación</h4>
+                
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <select
+                    value={invitePermission}
+                    onChange={e => setInvitePermission(e.target.value)}
+                    className="border border-gray-300 bg-white rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                  >
+                    <option value="user">User (Lector / Chat únicamente)</option>
+                    <option value="creator">Creator (Habilidad de Cargar / Editar)</option>
+                  </select>
+                  
+                  <button
+                    onClick={handleCreateInvitationLink}
+                    disabled={inviteLinkLoading}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl px-4 py-2.5 text-xs transition-all shadow-md shadow-indigo-100"
+                  >
+                    {inviteLinkLoading ? 'Generando...' : 'Generar Enlace'}
+                  </button>
+                </div>
+
+                {generatedInviteLink && (
+                  <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 flex gap-2.5 items-center justify-between">
+                    <span className="text-xs text-gray-600 font-mono select-all truncate flex-1">{generatedInviteLink}</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(generatedInviteLink);
+                        alert('¡Enlace de invitación copiado al portapapeles!');
+                      }}
+                      className="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-bold px-3 py-1.5 rounded-lg text-[10px] tracking-wider uppercase transition-colors shrink-0"
+                    >
+                      Copiar
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <hr className="border-gray-150" />
+
+              {/* SECTION 2: ADD USER VIA SEARCH AUTOCOMPLETE */}
+              <div className="space-y-3 relative">
+                <h4 className="font-bold text-gray-900 text-sm">Habilitar Usuario Específico</h4>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={userSearchQuery}
+                    onChange={e => setUserSearchQuery(e.target.value)}
+                    placeholder="Buscar por @username o Nombre Completo..."
+                    className="w-full border border-gray-300 rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  {searchLoading && <div className="absolute right-3.5 top-3 w-4 h-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />}
+                </div>
+
+                {/* Dropdown search results */}
+                {userSearchResults.length > 0 && (
+                  <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 divide-y divide-gray-50 max-h-48 overflow-y-auto">
+                    {userSearchResults.map(u => (
+                      <div
+                        key={u.id}
+                        className="p-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+                      >
+                        <div className="flex flex-col">
+                          <span className="text-xs font-bold text-gray-900">{u.full_name || 'Sin especificar'}</span>
+                          <span className="text-[10px] text-gray-400 font-semibold">{u.username}</span>
+                        </div>
+                        <div className="flex gap-1.5">
+                          <button
+                            onClick={() => handleAddNotebookUser(u.id, 'user')}
+                            className="bg-gray-100 hover:bg-indigo-50 text-gray-600 hover:text-indigo-700 font-bold px-2 py-1 rounded text-[10px] transition-colors"
+                          >
+                            Lector
+                          </button>
+                          <button
+                            onClick={() => handleAddNotebookUser(u.id, 'creator')}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-2 py-1 rounded text-[10px] transition-colors"
+                          >
+                            Editor
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <hr className="border-gray-150" />
+
+              {/* SECTION 3: ACL LIST */}
+              <div className="space-y-3">
+                <h4 className="font-bold text-gray-900 text-sm">Usuarios Habilitados en este Notebook</h4>
+                
+                {sharedUsersLoading ? (
+                  <div className="flex justify-center py-4">
+                    <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                  </div>
+                ) : sharedUsers.length === 0 ? (
+                  <p className="text-xs text-gray-400 font-medium">Ningún usuario externo tiene acceso a este notebook todavía.</p>
+                ) : (
+                  <div className="border border-gray-200 rounded-xl divide-y divide-gray-150 overflow-hidden">
+                    {sharedUsers.map(u => (
+                      <div key={u.user_id} className="p-3 flex items-center justify-between hover:bg-gray-50/50">
+                        <div className="flex flex-col">
+                          <span className="text-xs font-bold text-gray-900">{u.full_name || 'Sin especificar'}</span>
+                          <span className="text-[10px] text-gray-400 font-semibold">{u.username}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${u.role === 'creator' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-700'}`}>
+                            {u.role === 'creator' ? 'Editor' : 'Lector'}
+                          </span>
+                          <button
+                            onClick={() => handleRemoveNotebookUser(u.user_id)}
+                            className="text-red-500 hover:text-red-700 text-xs font-bold"
+                          >
+                            Quitar
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Citation Excerpt Detail Modal (Backup popup if doc is deleted) ─── */}
+      {activeCitation && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-xl border border-gray-100 animate-slide-up">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-gray-900 text-base truncate max-w-[280px]">
+                  📌 Cita: {activeCitation.document_name}
+                </h3>
+                <p className="text-[9px] text-gray-400 font-bold uppercase tracking-wider mt-0.5">
+                  Similitud: {Math.round(activeCitation.similarity * 100)}% {activeCitation.page_number ? ` · Página ${activeCitation.page_number}` : ''}
+                </p>
+              </div>
+              
+              <button onClick={() => setActiveCitation(null)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-xs sm:text-sm select-text text-gray-700 leading-relaxed max-h-60 overflow-y-auto select-text font-serif">
+              "{activeCitation.excerpt}"
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

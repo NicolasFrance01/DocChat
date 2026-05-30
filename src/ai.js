@@ -81,14 +81,30 @@ function buildUserContent(userMessage, relevantChunks) {
   return `FRAGMENTOS RELEVANTES DE LOS DOCUMENTOS:\n\n${contextBlock}\n\n---\n\nPregunta: ${userMessage}`;
 }
 
-async function chat({ notebookId, userMessage, history = [] }) {
+async function generateConversationTitle(userMessage, assistantResponse) {
+  try {
+    const prompt = `Genera un título extremadamente corto, conciso y amigable (máximo 4 palabras y en una sola línea, sin comillas ni aclaraciones) en español para una conversación que comienza con esta pregunta: "${userMessage.slice(0, 100)}" y tiene esta respuesta inicial: "${assistantResponse.slice(0, 150)}..."`;
+    const completion = await getGroq().chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+      max_tokens: 30,
+    });
+    return completion.choices[0].message.content.trim().replace(/^["']|["']$/g, '');
+  } catch (err) {
+    console.error('[generateTitle] failed:', err);
+    return userMessage.slice(0, 40) + '...';
+  }
+}
+
+async function chat({ notebookId, userMessage, history = [], documentIds = null }) {
   const recentHistory = history.slice(-12);
 
   // Try RAG only if there are documents with embeddings
   let relevantChunks = [];
   try {
     const queryEmbedding = await embedText(userMessage);
-    relevantChunks = await db.searchChunks(notebookId, queryEmbedding, 5);
+    relevantChunks = await db.searchChunks(notebookId, queryEmbedding, 5, documentIds);
   } catch { /* no embeddings available — fall through to free mode */ }
 
   const systemPrompt = relevantChunks.length > 0 ? SYSTEM_PROMPT_RAG : SYSTEM_PROMPT_FREE;
@@ -110,7 +126,7 @@ async function chat({ notebookId, userMessage, history = [] }) {
     chunk_id: c.id,
     document_name: c.document_name,
     page_number: c.page_number,
-    excerpt: c.content.slice(0, 200),
+    excerpt: c.content, // Return full content for premium interactive citations
     similarity: Math.round(c.similarity * 100) / 100,
   }));
 
@@ -119,13 +135,13 @@ async function chat({ notebookId, userMessage, history = [] }) {
 
 // ─── Streaming version (SSE) ──────────────────────────────────────────────────
 
-async function chatStream({ notebookId, userMessage, history = [], onChunk, onDone }) {
+async function chatStream({ notebookId, userMessage, history = [], documentIds = null, onChunk, onDone }) {
   const recentHistory = history.slice(-12);
 
   let relevantChunks = [];
   try {
     const queryEmbedding = await embedText(userMessage);
-    relevantChunks = await db.searchChunks(notebookId, queryEmbedding, 5);
+    relevantChunks = await db.searchChunks(notebookId, queryEmbedding, 5, documentIds);
   } catch { /* fall through to free mode */ }
 
   const systemPrompt = relevantChunks.length > 0 ? SYSTEM_PROMPT_RAG : SYSTEM_PROMPT_FREE;
@@ -156,11 +172,12 @@ async function chatStream({ notebookId, userMessage, history = [], onChunk, onDo
     chunk_id: c.id,
     document_name: c.document_name,
     page_number: c.page_number,
-    excerpt: c.content.slice(0, 200),
+    excerpt: c.content, // Return full content for premium interactive citations
     similarity: Math.round(c.similarity * 100) / 100,
   }));
 
   onDone(sources, fullAnswer);
 }
 
-module.exports = { embedText, embedChunks, chat, chatStream };
+module.exports = { embedText, embedChunks, chat, chatStream, generateConversationTitle };
+

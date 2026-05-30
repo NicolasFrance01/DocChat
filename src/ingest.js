@@ -54,42 +54,88 @@ const CHUNK_SIZE = 500;   // approximate tokens (1 token ≈ 4 chars)
 const CHUNK_OVERLAP = 50;
 const CHARS_PER_TOKEN = 4;
 
+function splitIntoPages(text) {
+  const pageRegex = /--- PAGE_BREAK_P_(\d+) ---/g;
+  const pages = [];
+  let match;
+  let lastIndex = 0;
+  let currentPageNum = null;
+
+  while ((match = pageRegex.exec(text)) !== null) {
+    const matchIndex = match.index;
+    
+    // Slice text preceding this page break
+    if (matchIndex > lastIndex) {
+      const segment = text.slice(lastIndex, matchIndex).trim();
+      if (segment) {
+        pages.push({ pageNumber: currentPageNum, text: segment });
+      }
+    }
+    
+    currentPageNum = parseInt(match[1], 10);
+    lastIndex = pageRegex.lastIndex;
+  }
+
+  // Append remaining text
+  if (lastIndex < text.length) {
+    const segment = text.slice(lastIndex).trim();
+    if (segment) {
+      pages.push({ pageNumber: currentPageNum, text: segment });
+    }
+  }
+
+  if (pages.length === 0) {
+    pages.push({ pageNumber: null, text: text });
+  }
+  return pages;
+}
+
 function chunkText(text) {
+  const pages = splitIntoPages(text);
+  const chunks = [];
+
   const chunkChars = CHUNK_SIZE * CHARS_PER_TOKEN;       // 2000 chars
   const overlapChars = CHUNK_OVERLAP * CHARS_PER_TOKEN;  // 200 chars
 
-  const chunks = [];
-  let start = 0;
+  for (const page of pages) {
+    const pageText = page.text;
+    const pageNum = page.pageNumber;
+    let start = 0;
 
-  while (start < text.length) {
-    let end = start + chunkChars;
+    while (start < pageText.length) {
+      let end = start + chunkChars;
 
-    // Try to break at a sentence boundary within the last 20% of the chunk
-    if (end < text.length) {
-      const searchFrom = end - Math.floor(chunkChars * 0.2);
-      const sentenceEnd = text.lastIndexOf('.', end);
-      if (sentenceEnd > searchFrom) end = sentenceEnd + 1;
-    } else {
-      end = text.length;
+      // Try to break at a sentence boundary within the last 20% of the chunk
+      if (end < pageText.length) {
+        const searchFrom = end - Math.floor(chunkChars * 0.2);
+        const sentenceEnd = pageText.lastIndexOf('.', end);
+        if (sentenceEnd > searchFrom) end = sentenceEnd + 1;
+      } else {
+        end = pageText.length;
+      }
+
+      const sliced = pageText.slice(start, end).trim();
+      if (sliced.length > 0) {
+        const content = (' ' + sliced).slice(1);
+        chunks.push({ 
+          content, 
+          chunkIndex: chunks.length, 
+          pageNumber: pageNum 
+        });
+      }
+
+      if (end >= pageText.length) {
+        break;
+      }
+
+      start = end - overlapChars;
+      if (start <= 0) break; // safety
     }
-
-    const sliced = text.slice(start, end).trim();
-    if (sliced.length > 0) {
-      // Force V8 to decouple from the parent large string to prevent memory leaks (SlicedString)
-      const content = (' ' + sliced).slice(1);
-      chunks.push({ content, chunkIndex: chunks.length });
-    }
-
-    if (end >= text.length) {
-      break;
-    }
-
-    start = end - overlapChars;
-    if (start <= 0) break; // safety: avoid infinite loop on tiny texts
   }
 
   return chunks;
 }
+
 
 // ─── Main ingest pipeline ─────────────────────────────────────────────────────
 
