@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS notebooks (
   user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name        TEXT NOT NULL,
   description TEXT,
+  ai_assistant_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  document_order INTEGER[] DEFAULT '{}',
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -119,3 +121,32 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id);
+
+-- ─── Cuestionarios de Documentos (Generados por IA) ──────────────────────────
+CREATE TABLE IF NOT EXISTS document_quizzes (
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE PRIMARY KEY,
+  questions   JSONB NOT NULL
+);
+
+-- ─── Progreso de Lectura y Cuestionarios por Usuario ──────────────────────────
+CREATE TABLE IF NOT EXISTS user_document_progress (
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  read_checked BOOLEAN NOT NULL DEFAULT FALSE,
+  quiz_passed  BOOLEAN NOT NULL DEFAULT FALSE,
+  score        INTEGER,
+  completed_at TIMESTAMPTZ,
+  PRIMARY KEY (user_id, document_id)
+);
+
+-- ─── Exámenes Finales por Notebook ───────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS user_final_exams (
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+  passed      BOOLEAN NOT NULL DEFAULT FALSE,
+  score       INTEGER,
+  questions   JSONB,
+  completed_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (user_id, notebook_id)
+);
+

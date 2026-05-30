@@ -20,6 +20,7 @@ export default function NotebooksPage() {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [aiAssistantEnabled, setAiAssistantEnabled] = useState(false);
   const [error, setError] = useState('');
 
   // Profile Modal State
@@ -99,9 +100,9 @@ export default function NotebooksPage() {
     setCreating(true);
     setError('');
     try {
-      const data = await createNotebook(name.trim(), description.trim() || undefined);
+      const data = await createNotebook(name.trim(), description.trim() || undefined, aiAssistantEnabled);
       setNotebooks(prev => [data.notebook, ...prev]);
-      setName(''); setDescription(''); setShowForm(false);
+      setName(''); setDescription(''); setAiAssistantEnabled(false); setShowForm(false);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Error al crear');
     } finally {
@@ -325,6 +326,18 @@ export default function NotebooksPage() {
                 placeholder="Descripción (opcional)"
                 className="w-full border border-gray-300 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all"
               />
+              <div className="flex items-center gap-2 pt-1 pb-1">
+                <input
+                  type="checkbox"
+                  id="ai_assistant_enabled"
+                  checked={aiAssistantEnabled}
+                  onChange={e => setAiAssistantEnabled(e.target.checked)}
+                  className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                />
+                <label htmlFor="ai_assistant_enabled" className="text-xs sm:text-sm font-semibold text-gray-700 cursor-pointer select-none">
+                  Habilitar ayuda del agente de IA (Cuestionarios y Camino de Aprendizaje)
+                </label>
+              </div>
             </div>
             {error && <p className="text-sm text-red-600 font-semibold">{error}</p>}
             <div className="flex gap-2.5 pt-1">

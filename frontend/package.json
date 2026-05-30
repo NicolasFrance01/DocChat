@@ -12,7 +12,9 @@
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "pdf-parse": "^1.1.1",
-    "mammoth": "^1.6.0"
+    "mammoth": "^1.6.0",
+    "@vercel/blob": "^0.23.3"
+
   },
   "devDependencies": {
     "@types/node": "^20",

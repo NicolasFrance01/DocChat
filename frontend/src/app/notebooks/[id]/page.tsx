@@ -5,7 +5,9 @@ import {
   getDocuments, getDocument, uploadDocument, ingestUrl, deleteDocument,
   getConversations, getMessages, sendChat,
   searchUsers, getNotebookUsers, addNotebookUser, removeNotebookUser, createInvitation, changePassword,
-  type Document, type Message, type Source, type User, type NotebookUser, type Conversation
+  getNotebookProgress, markDocumentRead, getDocumentQuiz, submitDocumentQuiz, getFinalExam, submitFinalExam,
+  type Document, type Message, type Source, type User, type NotebookUser, type Conversation,
+  type DocumentProgress, type QuizQuestion
 } from '@/lib/api';
 
 export default function NotebookPage() {
@@ -82,6 +84,32 @@ export default function NotebookPage() {
   // Citation Detail Modal
   const [activeCitation, setActiveCitation] = useState<Source | null>(null);
 
+  // LMS Learning Mode States
+  const [aiAssistantEnabled, setAiAssistantEnabled] = useState(false);
+  const [documentOrder, setDocumentOrder] = useState<number[]>([]);
+  const [userProgress, setUserProgress] = useState<Record<number, DocumentProgress>>({});
+  const [finalExamStatus, setFinalExamStatus] = useState<{ passed: boolean; score: number } | null>(null);
+
+  // Quiz Modal States
+  const [showQuizModal, setShowQuizModal] = useState(false);
+  const [quizDocId, setQuizDocId] = useState<number | null>(null);
+  const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
+  const [quizAnswers, setQuizAnswers] = useState<string[]>(['', '', '']);
+  const [quizLoading, setQuizLoading] = useState(false);
+  const [quizSubmitting, setQuizSubmitting] = useState(false);
+  const [quizFeedback, setQuizFeedback] = useState<any[] | null>(null);
+  const [quizError, setQuizError] = useState('');
+
+  // Final Exam Modal States
+  const [showFinalExamModal, setShowFinalExamModal] = useState(false);
+  const [finalExamQuestions, setFinalExamQuestions] = useState<QuizQuestion[]>([]);
+  const [finalExamAnswers, setFinalExamAnswers] = useState<string[]>(['', '', '', '', '']);
+  const [finalExamLoading, setFinalExamLoading] = useState(false);
+  const [finalExamSubmitting, setFinalExamSubmitting] = useState(false);
+  const [finalExamFeedback, setFinalExamFeedback] = useState<any[] | null>(null);
+  const [finalExamError, setFinalExamError] = useState('');
+
+
   useEffect(() => {
     const token = localStorage.getItem('docchat_token');
     const userStr = localStorage.getItem('docchat_user');
@@ -138,10 +166,40 @@ export default function NotebookPage() {
   async function loadDocs() {
     try {
       const data = await getDocuments(notebookId);
-      setDocs(data.documents);
+      
+      // Cargar progreso del curso (LMS)
+      let currentDocs = data.documents;
+      try {
+        const progressRes = await getNotebookProgress(notebookId);
+        setAiAssistantEnabled(progressRes.ai_assistant_enabled);
+        setDocumentOrder(progressRes.document_order || []);
+        setFinalExamStatus(progressRes.final_exam);
+
+        // Convertir array de progreso a mapa O(1) de busqueda rápida
+        const progMap: Record<number, DocumentProgress> = {};
+        progressRes.progress.forEach(p => {
+          progMap[p.document_id] = p;
+        });
+        setUserProgress(progMap);
+
+        // Si la IA está habilitada, ordenar los documentos según document_order
+        if (progressRes.ai_assistant_enabled && progressRes.document_order && progressRes.document_order.length > 0) {
+          currentDocs = [...data.documents].sort((a, b) => {
+            const idxA = progressRes.document_order.indexOf(a.id);
+            const idxB = progressRes.document_order.indexOf(b.id);
+            if (idxA === -1 && idxB === -1) return 0;
+            if (idxA === -1) return 1;
+            if (idxB === -1) return -1;
+            return idxA - idxB;
+          });
+        }
+      } catch (err) {
+        console.error('Error al cargar progreso del LMS:', err);
+      }
+
+      setDocs(currentDocs);
       
       // Check if logged-in user is creator of this notebook
-      // In getNotebooks, it returns notebooks. Since we only have document listing, we can query notebooks or check ACL.
       const userStr = localStorage.getItem('docchat_user');
       if (userStr) {
         const meUser = JSON.parse(userStr) as User;
@@ -152,7 +210,6 @@ export default function NotebookPage() {
           const { getNotebooks } = await import('@/lib/api');
           const nbs = await getNotebooks();
           const currentNotebook = nbs.notebooks.find(n => n.id === notebookId);
-          // If we created it, we are creator. Otherwise we check if we have a notebook ACL
           if (currentNotebook) {
             setIsCreator(true);
           } else {
@@ -163,7 +220,7 @@ export default function NotebookPage() {
       
       // Default select all documents
       const defaults: Record<number, boolean> = {};
-      data.documents.forEach(d => { defaults[d.id] = true; });
+      currentDocs.forEach(d => { defaults[d.id] = true; });
       setSelectedDocs(defaults);
     } catch {
       router.replace('/login');
@@ -358,6 +415,111 @@ export default function NotebookPage() {
         )}
       </p>
     );
+  }
+
+  // ── LMS Cuestionarios y Evaluaciones ─────────────────────────────────────────
+
+  async function handleLaunchQuiz(docId: number) {
+    setQuizDocId(docId);
+    setShowQuizModal(true);
+    setQuizLoading(true);
+    setQuizError('');
+    setQuizFeedback(null);
+    setQuizAnswers(['', '', '']);
+    try {
+      const data = await getDocumentQuiz(docId);
+      setQuizQuestions(data.quiz.questions);
+    } catch (err: any) {
+      setQuizError(err.message || 'Error al cargar el cuestionario de IA.');
+    } finally {
+      setQuizLoading(false);
+    }
+  }
+
+  function handleQuizAnswerSelect(questionIdx: number, optionLetter: string) {
+    setQuizAnswers(prev => {
+      const updated = [...prev];
+      updated[questionIdx] = optionLetter;
+      return updated;
+    });
+  }
+
+  async function handleQuizSubmit() {
+    if (!quizDocId) return;
+    if (quizAnswers.some(a => !a)) {
+      alert('Por favor responde todas las preguntas del cuestionario.');
+      return;
+    }
+    setQuizSubmitting(true);
+    setQuizError('');
+    try {
+      const res = await submitDocumentQuiz(quizDocId, quizAnswers);
+      setQuizFeedback(res.feedback);
+      
+      if (res.passed) {
+        // Actualizar progreso localmente
+        setUserProgress(prev => ({
+          ...prev,
+          [quizDocId]: {
+            ...(prev[quizDocId] || { document_id: quizDocId, read_checked: true }),
+            quiz_passed: true,
+            score: res.score,
+            completed_at: new Date().toISOString()
+          }
+        }));
+        // Recargar documentos para desbloquear de forma animada el siguiente candado
+        await loadDocs();
+      }
+    } catch (err: any) {
+      setQuizError(err.message || 'Error al enviar las respuestas.');
+    } finally {
+      setQuizSubmitting(false);
+    }
+  }
+
+  async function handleLaunchFinalExam() {
+    setShowFinalExamModal(true);
+    setFinalExamLoading(true);
+    setFinalExamError('');
+    setFinalExamFeedback(null);
+    setFinalExamAnswers(['', '', '', '', '']);
+    try {
+      const data = await getFinalExam(notebookId);
+      setFinalExamQuestions(data.exam.questions);
+    } catch (err: any) {
+      setFinalExamError(err.message || 'Error al cargar el examen final.');
+    } finally {
+      setFinalExamLoading(false);
+    }
+  }
+
+  function handleFinalExamAnswerSelect(questionIdx: number, optionLetter: string) {
+    setFinalExamAnswers(prev => {
+      const updated = [...prev];
+      updated[questionIdx] = optionLetter;
+      return updated;
+    });
+  }
+
+  async function handleFinalExamSubmit() {
+    if (finalExamAnswers.some(a => !a)) {
+      alert('Por favor responde todas las preguntas del examen integrador.');
+      return;
+    }
+    setFinalExamSubmitting(true);
+    setFinalExamError('');
+    try {
+      const res = await submitFinalExam(notebookId, finalExamAnswers);
+      setFinalExamFeedback(res.feedback);
+      
+      if (res.passed) {
+        setFinalExamStatus({ passed: true, score: res.score });
+      }
+    } catch (err: any) {
+      setFinalExamError(err.message || 'Error al enviar el examen final.');
+    } finally {
+      setFinalExamSubmitting(false);
+    }
   }
 
   // ── Upload file ──────────────────────────────────────────────────────────────
@@ -786,41 +948,117 @@ export default function NotebookPage() {
               ) : docs.length === 0 ? (
                 <p className="text-xs text-gray-400 text-center py-8 font-medium">Sin documentos todavía.</p>
               ) : (
-                docs.map(doc => (
-                  <div
-                    key={doc.id}
-                    className={`flex items-start gap-2.5 p-2 rounded-xl border hover:bg-gray-50/50 transition-all group select-none ${selectedDocs[doc.id] ? 'border-indigo-100 bg-indigo-50/10' : 'border-transparent'}`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={!!selectedDocs[doc.id]}
-                      onChange={() => toggleDocSelection(doc.id)}
-                      className="mt-0.5 w-3.5 h-3.5 rounded text-indigo-600 border-gray-300 focus:ring-indigo-500 cursor-pointer"
-                    />
-                    <div className="flex-1 min-w-0 cursor-pointer" onClick={() => handleOpenDocumentViewer(doc)}>
-                      <p className="text-xs font-bold text-gray-800 truncate group-hover:text-indigo-600 transition-colors" title={doc.name}>
-                        {typeIcon[doc.type] ?? '📄'} {doc.name}
-                      </p>
-                      <p className="text-[10px] text-gray-400 font-semibold mt-0.5">
-                        {doc.chunk_count > 0 ? `${doc.chunk_count} fragmentos` : 'Procesando embeddings…'}
-                      </p>
+                docs.map((doc, idx) => {
+                  const docIdx = documentOrder.indexOf(doc.id);
+                  const isLocked = aiAssistantEnabled && docIdx > 0 && !userProgress[documentOrder[docIdx - 1]]?.quiz_passed;
+                  const isPassed = aiAssistantEnabled && userProgress[doc.id]?.quiz_passed;
+                  const isRead = aiAssistantEnabled && userProgress[doc.id]?.read_checked;
+
+                  return (
+                    <div
+                      key={doc.id}
+                      className={`flex flex-col gap-1.5 p-3 rounded-2xl border transition-all duration-200 group select-none ${
+                        isLocked 
+                          ? 'bg-gray-100/40 border-gray-200/50 opacity-50 cursor-not-allowed'
+                          : selectedDocs[doc.id] 
+                            ? 'border-indigo-200 bg-indigo-50/15 shadow-sm' 
+                            : 'border-gray-200 bg-white hover:border-indigo-300'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        {!isLocked && (
+                          <input
+                            type="checkbox"
+                            checked={!!selectedDocs[doc.id]}
+                            onChange={() => toggleDocSelection(doc.id)}
+                            className="mt-0.5 w-3.5 h-3.5 rounded text-indigo-600 border-gray-300 focus:ring-indigo-500 cursor-pointer"
+                          />
+                        )}
+                        {isLocked && (
+                          <span className="mt-0.5 text-xs text-gray-400 select-none">🔒</span>
+                        )}
+                        
+                        <div 
+                          className={`flex-1 min-w-0 ${isLocked ? 'pointer-events-none' : 'cursor-pointer'}`}
+                          onClick={() => handleOpenDocumentViewer(doc)}
+                        >
+                          <p className={`text-xs font-bold truncate transition-colors ${isLocked ? 'text-gray-400' : 'text-gray-800 group-hover:text-indigo-600'}`} title={doc.name}>
+                            {typeIcon[doc.type] ?? '📄'} {doc.name}
+                          </p>
+                          <p className="text-[10px] text-gray-400 font-semibold mt-0.5">
+                            {doc.chunk_count > 0 ? `${doc.chunk_count} fragmentos` : 'Procesando embeddings…'}
+                          </p>
+                        </div>
+
+                        {me?.role !== 'user' && !isLocked && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
+                            className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+
+                      {/* LMS Badges & Interactive Buttons inside the card */}
+                      {aiAssistantEnabled && (
+                        <div className="mt-1.5 flex items-center justify-between border-t border-gray-100 pt-2 text-[10px] select-none font-bold uppercase tracking-wider">
+                          {isLocked ? (
+                            <span className="text-gray-400">🔒 Bloqueado</span>
+                          ) : isPassed ? (
+                            <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded-lg flex items-center gap-1">✅ Aprobado</span>
+                          ) : isRead ? (
+                            <div className="w-full flex items-center justify-between gap-1">
+                              <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded-lg">📖 Leído</span>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleLaunchQuiz(doc.id); }}
+                                className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold px-2.5 py-1 rounded-lg text-[9px] tracking-normal normal-case transition-all shadow-sm"
+                              >
+                                📝 Hacer Cuestionario
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg">📖 Pendiente de lectura</span>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    {me?.role !== 'user' && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
-                        className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    )}
-                  </div>
-                ))
+                  );
+                })
               )}
+
+              {/* Examen Final Integrador en Modo LMS */}
+              {aiAssistantEnabled && docs.length > 0 && (() => {
+                const allQuizzesPassed = docs.every(d => userProgress[d.id]?.quiz_passed);
+                if (finalExamStatus?.passed) {
+                  return (
+                    <div className="mt-4 bg-gradient-to-r from-amber-500 to-yellow-500 text-white rounded-2xl p-4 text-center shadow-lg select-none">
+                      <h4 className="font-extrabold text-sm flex items-center justify-center gap-1.5">🎓 Notebook Aprobado</h4>
+                      <p className="text-[10px] font-semibold mt-1">¡Felicitaciones! Completaste el examen integrador final con éxito ({finalExamStatus.score}/5).</p>
+                    </div>
+                  );
+                } else if (allQuizzesPassed) {
+                  return (
+                    <button
+                      onClick={handleLaunchFinalExam}
+                      className="w-full mt-4 bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-600 hover:to-yellow-750 text-white font-extrabold rounded-2xl py-3.5 text-xs tracking-wider uppercase transition-all shadow-md shadow-amber-100 flex items-center justify-center gap-2 select-none animate-pulse"
+                    >
+                      🎓 Tomar Examen Final
+                    </button>
+                  );
+                } else {
+                  return (
+                    <div className="w-full mt-4 bg-gray-100 text-gray-400 font-bold border border-gray-200/50 rounded-2xl py-3 text-center text-xs select-none flex items-center justify-center gap-2 opacity-50 cursor-not-allowed">
+                      <span>🔒 Examen Final (Bloqueado)</span>
+                    </div>
+                  );
+                }
+              })()}
             </div>
-          </div>
-        </aside>
+            </div>
+          </aside>
 
         {/* ── Center: Chat Dialogue ─────────────────────────────────────────── */}
         <main className="flex-1 flex flex-col overflow-hidden bg-white z-0">
@@ -1042,11 +1280,22 @@ export default function NotebookPage() {
                 <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Modo lectura integrada</p>
               </div>
 
-              <button onClick={() => setViewerDoc(null)} className="text-gray-400 hover:text-gray-600 transition-colors p-1">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+              <div className="flex items-center gap-2">
+                {viewerDoc.source && viewerDoc.source.startsWith('http') && (
+                  <button
+                    onClick={() => window.open(viewerDoc.source || '', '_blank')}
+                    className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 select-none"
+                    title="Abrir el archivo original en una pestaña nueva"
+                  >
+                    <span>📄 Abrir original</span>
+                  </button>
+                )}
+                <button onClick={() => setViewerDoc(null)} className="text-gray-400 hover:text-gray-600 transition-colors p-1">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             {/* Viewer Search Bar */}
@@ -1089,6 +1338,71 @@ export default function NotebookPage() {
                 ))
               )}
             </div>
+
+            {/* LMS Section at the bottom of the viewer */}
+            {aiAssistantEnabled && (
+              <div className="p-4 border-t border-gray-150 bg-gray-50/50 space-y-3 select-none shrink-0">
+                <div className="flex items-start gap-2.5 bg-white border border-gray-200 rounded-xl p-3 shadow-sm">
+                  <input
+                    type="checkbox"
+                    id="mark_as_read"
+                    checked={!!userProgress[viewerDoc.id]?.read_checked}
+                    onChange={async (e) => {
+                      const checked = e.target.checked;
+                      try {
+                        await markDocumentRead(viewerDoc.id, checked);
+                        setUserProgress(prev => ({
+                          ...prev,
+                          [viewerDoc.id]: {
+                            ...(prev[viewerDoc.id] || { document_id: viewerDoc.id, quiz_passed: false, score: null, completed_at: null }),
+                            read_checked: checked
+                          }
+                        }));
+                      } catch (err: any) {
+                        alert(err.message || 'Error al actualizar lectura.');
+                      }
+                    }}
+                    className="mt-0.5 w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                  />
+                  <div 
+                    className="flex flex-col cursor-pointer" 
+                    onClick={async () => {
+                      const nextVal = !userProgress[viewerDoc.id]?.read_checked;
+                      try {
+                        await markDocumentRead(viewerDoc.id, nextVal);
+                        setUserProgress(prev => ({
+                          ...prev,
+                          [viewerDoc.id]: {
+                            ...(prev[viewerDoc.id] || { document_id: viewerDoc.id, quiz_passed: false, score: null, completed_at: null }),
+                            read_checked: nextVal
+                          }
+                        }));
+                      } catch (err: any) {
+                        alert(err.message || 'Error al actualizar lectura.');
+                      }
+                    }}
+                  >
+                    <span className="text-xs font-bold text-gray-800">He completado la lectura</span>
+                    <span className="text-[9px] text-gray-400 font-semibold uppercase leading-tight mt-0.5">Activar el cuestionario de evaluación</span>
+                  </div>
+                </div>
+
+                {userProgress[viewerDoc.id]?.read_checked && !userProgress[viewerDoc.id]?.quiz_passed && (
+                  <button
+                    onClick={() => handleLaunchQuiz(viewerDoc.id)}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-xl py-2.5 text-xs tracking-wider uppercase transition-all shadow-md shadow-indigo-100 flex items-center justify-center gap-1.5 animate-pulse"
+                  >
+                    📝 Hacer Cuestionario
+                  </button>
+                )}
+
+                {userProgress[viewerDoc.id]?.quiz_passed && (
+                  <div className="bg-green-50 border border-green-150 rounded-xl p-3 flex items-center justify-center gap-1.5 text-green-700 text-xs font-bold select-none">
+                    <span>✅ Cuestionario Aprobado ({userProgress[viewerDoc.id]?.score || 3}/3)</span>
+                  </div>
+                )}
+              </div>
+            )}
           </aside>
         )}
       </div>
@@ -1316,6 +1630,314 @@ export default function NotebookPage() {
           </div>
         </div>
       )}
+
+      {/* ─── Cuestionario (Quiz) Modal ────────────────────────────────────────── */}
+      {showQuizModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 z-50 overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl border border-gray-100 overflow-hidden my-8 animate-slide-up flex flex-col max-h-[90vh]">
+            
+            {/* Modal Header */}
+            <div className="px-6 py-4.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">📝</span>
+                <div>
+                  <h3 className="font-bold text-gray-950 text-base sm:text-lg">Cuestionario de IA</h3>
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Respondé 3 de 3 correctas para aprobar</p>
+                </div>
+              </div>
+              {!quizSubmitting && (
+                <button 
+                  onClick={() => { setShowQuizModal(false); setQuizFeedback(null); setQuizDocId(null); }} 
+                  className="text-gray-400 hover:text-gray-600 transition-colors p-1"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {quizLoading ? (
+                <div className="flex flex-col items-center justify-center py-16 space-y-3">
+                  <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs text-gray-400 font-bold uppercase tracking-wider animate-pulse">Generando cuestionario con Llama 3.3…</p>
+                </div>
+              ) : quizError ? (
+                <div className="bg-red-50 border border-red-150 rounded-2xl p-4 text-center">
+                  <p className="text-xs sm:text-sm text-red-600 font-semibold">{quizError}</p>
+                  <button 
+                    onClick={() => quizDocId && handleLaunchQuiz(quizDocId)} 
+                    className="mt-3 bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all shadow-sm"
+                  >
+                    Volver a intentar
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-8 select-text">
+                  {quizQuestions.map((q, qIdx) => {
+                    const feedback = quizFeedback ? quizFeedback.find(f => f.questionIndex === qIdx) : null;
+                    const selected = quizAnswers[qIdx];
+
+                    return (
+                      <div key={qIdx} className="space-y-3.5 border-b border-gray-100 pb-6 last:border-0 last:pb-0">
+                        <h4 className="font-bold text-gray-900 text-sm sm:text-base select-text">
+                          <span className="text-indigo-600 font-extrabold mr-1.5">{qIdx + 1}.</span> 
+                          {q.question}
+                        </h4>
+
+                        <div className="grid grid-cols-1 gap-2.5">
+                          {q.options.map((opt, optIdx) => {
+                            const optionLetter = opt.trim().charAt(0).toUpperCase(); // "A", "B", etc.
+                            const isCurrentSelected = selected === optionLetter;
+
+                            let btnStyle = 'border-gray-200 bg-white text-gray-700 hover:border-indigo-300';
+                            if (isCurrentSelected) {
+                              btnStyle = 'border-indigo-600 bg-indigo-50/10 text-indigo-700 font-semibold ring-2 ring-indigo-500/10';
+                            }
+
+                            if (feedback) {
+                              const isThisCorrect = feedback.correctAnswer.trim().toUpperCase().charAt(0) === optionLetter;
+                              const isThisUserSelection = feedback.userAnswer.trim().toUpperCase().charAt(0) === optionLetter;
+
+                              if (isThisCorrect) {
+                                btnStyle = 'border-green-600 bg-green-50/20 text-green-800 font-semibold';
+                              } else if (isThisUserSelection && !feedback.isCorrect) {
+                                btnStyle = 'border-red-600 bg-red-50/20 text-red-800 font-semibold';
+                              } else {
+                                btnStyle = 'border-gray-200 bg-white text-gray-400 opacity-60 pointer-events-none';
+                              }
+                            }
+
+                            return (
+                              <button
+                                key={optIdx}
+                                type="button"
+                                disabled={!!feedback}
+                                onClick={() => handleQuizAnswerSelect(qIdx, optionLetter)}
+                                className={`w-full text-left border rounded-xl px-4 py-3 text-xs sm:text-sm transition-all duration-150 font-medium ${btnStyle}`}
+                              >
+                                {opt}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {feedback && (
+                          <div className={`mt-3 p-3.5 rounded-2xl border text-xs leading-relaxed ${feedback.isCorrect ? 'bg-green-50/30 border-green-150 text-green-800' : 'bg-red-50/30 border-red-150 text-red-800'}`}>
+                            <p className="font-extrabold mb-1">{feedback.isCorrect ? '✅ ¡Correcto!' : '❌ Incorrecto'}</p>
+                            <p className="font-medium text-gray-700">{feedback.explanation}</p>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            {!quizLoading && !quizError && (
+              <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center justify-between shrink-0">
+                {quizFeedback ? (
+                  (() => {
+                    const allCorrect = quizFeedback.every(f => f.isCorrect);
+                    return (
+                      <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-3">
+                        <span className={`text-xs sm:text-sm font-bold ${allCorrect ? 'text-green-700' : 'text-amber-700'}`}>
+                          {allCorrect 
+                            ? '🎉 ¡Excelente! Aprobaste con 3/3 respuestas correctas.' 
+                            : `⚠️ Obtuviste ${quizFeedback.filter(f => f.isCorrect).length}/3 correctas. Debés aprobar el 100% para continuar.`
+                          }
+                        </span>
+                        {allCorrect ? (
+                          <button
+                            onClick={() => { setShowQuizModal(false); setQuizFeedback(null); setQuizDocId(null); }}
+                            className="bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl px-5 py-2 text-xs transition-all shadow-md"
+                          >
+                            Cerrar y Continuar
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => setQuizFeedback(null)}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl px-5 py-2 text-xs transition-all shadow-md"
+                          >
+                            Reintentar Cuestionario
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <button
+                    onClick={handleQuizSubmit}
+                    disabled={quizSubmitting || quizAnswers.some(a => !a)}
+                    className="w-full sm:w-auto ml-auto bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-extrabold rounded-xl px-6 py-2.5 text-xs tracking-wider uppercase transition-all shadow-md shadow-indigo-100"
+                  >
+                    {quizSubmitting ? 'Enviando...' : 'Enviar Respuestas'}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── Examen Final Modal ──────────────────────────────────────────────── */}
+      {showFinalExamModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 z-50 overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl border border-gray-100 overflow-hidden my-8 animate-slide-up flex flex-col max-h-[90vh]">
+            
+            {/* Modal Header */}
+            <div className="px-6 py-4.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">🎓</span>
+                <div>
+                  <h3 className="font-bold text-gray-950 text-base sm:text-lg">Examen Final Integrador</h3>
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Respondé al menos 4 de 5 correctas para aprobar</p>
+                </div>
+              </div>
+              {!finalExamSubmitting && (
+                <button 
+                  onClick={() => { setShowFinalExamModal(false); setFinalExamFeedback(null); }} 
+                  className="text-gray-400 hover:text-gray-600 transition-colors p-1"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {finalExamLoading ? (
+                <div className="flex flex-col items-center justify-center py-16 space-y-3">
+                  <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs text-gray-400 font-bold uppercase tracking-wider animate-pulse">Generando examen integrador con Llama 3.3…</p>
+                </div>
+              ) : finalExamError ? (
+                <div className="bg-red-50 border border-red-150 rounded-2xl p-4 text-center">
+                  <p className="text-xs sm:text-sm text-red-600 font-semibold">{finalExamError}</p>
+                  <button 
+                    onClick={handleLaunchFinalExam} 
+                    className="mt-3 bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all shadow-sm"
+                  >
+                    Volver a intentar
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-8 select-text">
+                  {finalExamQuestions.map((q, qIdx) => {
+                    const feedback = finalExamFeedback ? finalExamFeedback.find(f => f.questionIndex === qIdx) : null;
+                    const selected = finalExamAnswers[qIdx];
+
+                    return (
+                      <div key={qIdx} className="space-y-3.5 border-b border-gray-100 pb-6 last:border-0 last:pb-0">
+                        <h4 className="font-bold text-gray-900 text-sm sm:text-base select-text">
+                          <span className="text-amber-500 font-extrabold mr-1.5">{qIdx + 1}.</span> 
+                          {q.question}
+                        </h4>
+
+                        <div className="grid grid-cols-1 gap-2.5">
+                          {q.options.map((opt, optIdx) => {
+                            const optionLetter = opt.trim().charAt(0).toUpperCase();
+                            const isCurrentSelected = selected === optionLetter;
+
+                            let btnStyle = 'border-gray-200 bg-white text-gray-700 hover:border-indigo-300';
+                            if (isCurrentSelected) {
+                              btnStyle = 'border-amber-500 bg-amber-50/10 text-amber-800 font-semibold ring-2 ring-amber-500/10';
+                            }
+
+                            if (feedback) {
+                              const isThisCorrect = feedback.correctAnswer.trim().toUpperCase().charAt(0) === optionLetter;
+                              const isThisUserSelection = feedback.userAnswer.trim().toUpperCase().charAt(0) === optionLetter;
+
+                              if (isThisCorrect) {
+                                btnStyle = 'border-green-600 bg-green-50/20 text-green-800 font-semibold';
+                              } else if (isThisUserSelection && !feedback.isCorrect) {
+                                btnStyle = 'border-red-600 bg-red-50/20 text-red-800 font-semibold';
+                              } else {
+                                btnStyle = 'border-gray-200 bg-white text-gray-400 opacity-60 pointer-events-none';
+                              }
+                            }
+
+                            return (
+                              <button
+                                key={optIdx}
+                                type="button"
+                                disabled={!!feedback}
+                                onClick={() => handleFinalExamAnswerSelect(qIdx, optionLetter)}
+                                className={`w-full text-left border rounded-xl px-4 py-3 text-xs sm:text-sm transition-all duration-150 font-medium ${btnStyle}`}
+                              >
+                                {opt}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {feedback && (
+                          <div className={`mt-3 p-3.5 rounded-2xl border text-xs leading-relaxed ${feedback.isCorrect ? 'bg-green-50/30 border-green-150 text-green-800' : 'bg-red-50/30 border-red-150 text-red-800'}`}>
+                            <p className="font-extrabold mb-1">{feedback.isCorrect ? '✅ ¡Correcto!' : '❌ Incorrecto'}</p>
+                            <p className="font-medium text-gray-700">{feedback.explanation}</p>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            {!finalExamLoading && !finalExamError && (
+              <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center justify-between shrink-0">
+                {finalExamFeedback ? (
+                  (() => {
+                    const hasPassed = finalExamFeedback.filter(f => f.isCorrect).length >= 4;
+                    const correctCount = finalExamFeedback.filter(f => f.isCorrect).length;
+                    return (
+                      <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-3">
+                        <span className={`text-xs sm:text-sm font-bold ${hasPassed ? 'text-green-700 animate-bounce' : 'text-red-700'}`}>
+                          {hasPassed 
+                            ? `🏆 ¡Felicitaciones! Aprobaste el curso con ${correctCount}/5 respuestas correctas.` 
+                            : `⚠️ Obtuviste ${correctCount}/5 correctas. Necesitás al menos 4 correctas para aprobar.`
+                          }
+                        </span>
+                        {hasPassed ? (
+                          <button
+                            onClick={() => { setShowFinalExamModal(false); setFinalExamFeedback(null); }}
+                            className="bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl px-5 py-2 text-xs transition-all shadow-md"
+                          >
+                            Cerrar y Finalizar Notebook
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => setFinalExamFeedback(null)}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl px-5 py-2 text-xs transition-all shadow-md"
+                          >
+                            Reintentar Examen
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <button
+                    onClick={handleFinalExamSubmit}
+                    disabled={finalExamSubmitting || finalExamAnswers.some(a => !a)}
+                    className="w-full sm:w-auto ml-auto bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white font-extrabold rounded-xl px-6 py-2.5 text-xs tracking-wider uppercase transition-all shadow-md shadow-amber-100"
+                  >
+                    {finalExamSubmitting ? 'Enviando...' : 'Enviar Respuestas'}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

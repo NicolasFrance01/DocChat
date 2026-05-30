@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { put } from '@vercel/blob';
 
 export const maxDuration = 60; // seconds — needs Vercel Pro for >10s, but short PDFs fit in 10s
 
@@ -65,6 +66,23 @@ export async function POST(
       return NextResponse.json({ error: 'No se pudo extraer texto del archivo' }, { status: 422 });
     }
 
+    // Subir el archivo original a Vercel Blob si el token está configurado
+    let fileUrl = file.name;
+    if (process.env.BLOB_READ_WRITE_TOKEN) {
+      try {
+        const blob = await put(file.name, buffer, {
+          access: 'public',
+          token: process.env.BLOB_READ_WRITE_TOKEN,
+        });
+        fileUrl = blob.url;
+        console.log('[ingest] Subido exitosamente a Vercel Blob:', fileUrl);
+      } catch (blobErr) {
+        console.error('[ingest] Falló la subida a Vercel Blob, usando fallback:', blobErr);
+      }
+    } else {
+      console.warn('[ingest] BLOB_READ_WRITE_TOKEN no configurado en Next.js. Usando fallback de nombre de archivo local.');
+    }
+
     // Forward extracted text (lightweight string) to Render for embedding
     const backendRes = await fetch(`${API}/api/notebooks/${params.notebookId}/documents/text`, {
       method: 'POST',
@@ -72,11 +90,12 @@ export async function POST(
         'Content-Type': 'application/json',
         'X-Session-Token': token,
       },
-      body: JSON.stringify({ name: file.name, type, source: file.name, text }),
+      body: JSON.stringify({ name: file.name, type, source: fileUrl, text }),
     });
 
     const data = await backendRes.json();
     return NextResponse.json(data, { status: backendRes.status });
+
   } catch (err: unknown) {
     console.error('[ingest route]', err);
     const msg = err instanceof Error ? err.message : 'Error interno';

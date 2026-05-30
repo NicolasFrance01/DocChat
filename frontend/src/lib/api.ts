@@ -102,10 +102,10 @@ export async function getNotebooks() {
   return request<{ notebooks: Notebook[] }>('/api/notebooks');
 }
 
-export async function createNotebook(name: string, description?: string) {
+export async function createNotebook(name: string, description?: string, aiAssistantEnabled?: boolean) {
   return request<{ notebook: Notebook }>('/api/notebooks', {
     method: 'POST',
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify({ name, description, ai_assistant_enabled: aiAssistantEnabled }),
   });
 }
 
@@ -259,16 +259,99 @@ export async function getMessages(conversationId: number) {
   return request<{ messages: Message[] }>(`/api/conversations/${conversationId}/messages`);
 }
 
+// ─── Learning / LMS Methods ───────────────────────────────────────────────────
+
+export async function getNotebookProgress(notebookId: number) {
+  return request<NotebookProgressResponse>(`/api/notebooks/${notebookId}/progress`);
+}
+
+export async function markDocumentRead(docId: number, checked: boolean) {
+  return request<{ ok: boolean }>(`/api/documents/${docId}/read`, {
+    method: 'POST',
+    body: JSON.stringify({ checked }),
+  });
+}
+
+export async function getDocumentQuiz(docId: number) {
+  return request<QuizResponse>(`/api/documents/${docId}/quiz`);
+}
+
+export async function submitDocumentQuiz(docId: number, answers: string[]) {
+  return request<QuizSubmitResponse>(`/api/documents/${docId}/quiz/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ answers }),
+  });
+}
+
+export async function getFinalExam(notebookId: number) {
+  return request<FinalExamResponse>(`/api/notebooks/${notebookId}/final-exam`);
+}
+
+export async function submitFinalExam(notebookId: number, answers: string[]) {
+  return request<QuizSubmitResponse>(`/api/notebooks/${notebookId}/final-exam/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ answers }),
+  });
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface User { id: number; username: string; role: string; full_name: string | null; password_changed: boolean; user_created_at?: string; }
 export interface UserAdmin { id: number; username: string; role: string; full_name: string | null; password_changed: boolean; status: string; created_at: string; }
 export interface Activity { id: number; user_id: number | null; username: string; action: string; notebook_id: number | null; notebook_name: string | null; document_id: number | null; document_name: string | null; details: string | null; created_at: string; }
 export interface NotebookUser { user_id: number; role: string; username: string; full_name: string | null; }
-export interface Notebook { id: number; user_id: number; name: string; description: string | null; document_count: number; created_at: string; }
+export interface Notebook { id: number; user_id: number; name: string; description: string | null; document_count: number; created_at: string; ai_assistant_enabled?: boolean; document_order?: number[]; }
 export interface Document { id: number; notebook_id: number; name: string; type: string; source: string | null; chunk_count: number; created_at: string; }
 export interface DocumentText extends Document { raw_text: string | null; }
 export interface Conversation { id: number; notebook_id: number; title: string | null; message_count: number; created_at: string; }
 export interface Message { id: number; conversation_id: number; role: 'user' | 'assistant'; content: string; sources: Source[] | null; parent_id: number | null; created_at: string; }
 export interface Source { chunk_id: number; document_name: string; page_number: number | null; excerpt: string; similarity: number; }
+
+export interface DocumentProgress {
+  document_id: number;
+  read_checked: boolean;
+  quiz_passed: boolean;
+  score: number | null;
+  completed_at: string | null;
+}
+
+export interface NotebookProgressResponse {
+  progress: DocumentProgress[];
+  document_order: number[];
+  ai_assistant_enabled: boolean;
+  final_exam: { passed: boolean; score: number } | null;
+}
+
+export interface QuizQuestion {
+  question: string;
+  options: string[];
+}
+
+export interface QuizResponse {
+  quiz: {
+    document_id: number;
+    questions: QuizQuestion[];
+  };
+}
+
+export interface QuizSubmitResponse {
+  passed: boolean;
+  score: number;
+  total: number;
+  feedback: {
+    questionIndex: number;
+    userAnswer: string;
+    correctAnswer: string;
+    isCorrect: boolean;
+    explanation: string;
+  }[];
+}
+
+export interface FinalExamResponse {
+  exam: {
+    notebook_id: number;
+    questions: QuizQuestion[];
+  };
+}
+
 

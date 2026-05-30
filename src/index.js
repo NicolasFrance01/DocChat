@@ -128,7 +128,7 @@ app.get('/api/notebooks', requireAuth, async (req, res) => {
 
 app.post('/api/notebooks', requireAuth, async (req, res) => {
   try {
-    const { name, description } = req.body;
+    const { name, description, ai_assistant_enabled } = req.body;
     if (!name) return res.status(400).json({ error: 'El nombre es requerido' });
     
     // Non-admin and non-creator cannot create notebooks
@@ -136,10 +136,11 @@ app.post('/api/notebooks', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'No tienes permisos para crear notebooks' });
     }
 
-    const notebook = await db.createNotebook(req.user.id, name, description);
+    const notebook = await db.createNotebook(req.user.id, name, description, !!ai_assistant_enabled);
     await db.logActivity(req.user.id, req.user.username, 'create_notebook', notebook.id, notebook.name, null, null, `Notebook "${name}" creado`);
 
     res.status(201).json({ notebook });
+
   } catch (err) {
     console.error('[notebooks:create]', err);
     res.status(500).json({ error: 'Error interno' });
@@ -291,6 +292,16 @@ app.post('/api/notebooks/:id/documents/text', requireAuth, async (req, res) => {
     const doc = await db.createDocument(notebook.id, name, type, source || name, text);
     await db.logActivity(req.user.id, req.user.username, 'upload_document', notebook.id, notebook.name, doc.id, doc.name, `Archivo "${name}" creado vía proxy`);
 
+    // Actualizar orden de documentos del notebook
+    const currentOrder = notebook.document_order || [];
+    currentOrder.push(doc.id);
+    await db.updateNotebookDocumentOrder(notebook.id, currentOrder);
+
+    // Si tiene IA activa, generar quiz de fondo
+    if (notebook.ai_assistant_enabled) {
+      generateAndStoreQuiz(doc.id, text).catch(err => console.error('[ingest:quiz]', err));
+    }
+
     res.status(202).json({ document: doc, message: 'Procesando embeddings en segundo plano…' });
 
     const chunks = chunkText(text);
@@ -300,6 +311,14 @@ app.post('/api/notebooks/:id/documents/text', requireAuth, async (req, res) => {
     if (!res.headersSent) res.status(500).json({ error: err.message || 'Error interno' });
   }
 });
+
+async function generateAndStoreQuiz(docId, text) {
+  const { generateQuizForDocument } = require('./ai');
+  const questions = await generateQuizForDocument(text);
+  await db.saveQuizForDocument(docId, questions);
+  console.log(`[ingest] Quiz autogenerado y guardado para documento ${docId}`);
+}
+
 
 app.delete('/api/documents/:id', requireAuth, async (req, res) => {
   try {
@@ -715,6 +734,217 @@ app.post('/api/notebooks/:id/chat', requireAuth, async (req, res) => {
     }
   }
 });
+
+
+// ─── Learning, Quizzes & Final Exams Endpoints ───────────────────────────────
+
+app.get('/api/notebooks/:id/progress', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    const progress = await db.getNotebookProgress(notebook.id, req.user.id);
+    const finalExam = await db.getFinalExam(req.user.id, notebook.id);
+
+    res.json({
+      progress,
+      document_order: notebook.document_order || [],
+      ai_assistant_enabled: notebook.ai_assistant_enabled,
+      final_exam: finalExam ? { passed: finalExam.passed, score: finalExam.score } : null
+    });
+  } catch (err) {
+    console.error('[progress]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.post('/api/documents/:id/read', requireAuth, async (req, res) => {
+  try {
+    const docId = Number(req.params.id);
+    const { checked } = req.body;
+    const doc = await db.getDocumentById(docId);
+    if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
+
+    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    await db.updateDocumentRead(req.user.id, docId, !!checked);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[read]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.get('/api/documents/:id/quiz', requireAuth, async (req, res) => {
+  try {
+    const docId = Number(req.params.id);
+    const doc = await db.getDocumentById(docId);
+    if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
+
+    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    let quiz = await db.getQuizByDocument(docId);
+    if (!quiz) {
+      console.log(`[quiz] Quiz no pregenerado para documento ${docId}. Generando en caliente…`);
+      const { generateQuizForDocument } = require('./ai');
+      const questions = await generateQuizForDocument(doc.raw_text || '');
+      await db.saveQuizForDocument(docId, questions);
+      quiz = { document_id: docId, questions };
+    }
+
+    // Ocultar respuestas y explicaciones correctas al enviarlo al cliente
+    const questionsForClient = quiz.questions.map(q => ({
+      question: q.question,
+      options: q.options
+    }));
+
+    res.json({ quiz: { document_id: docId, questions: questionsForClient } });
+  } catch (err) {
+    console.error('[quiz:get]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.post('/api/documents/:id/quiz/submit', requireAuth, async (req, res) => {
+  try {
+    const docId = Number(req.params.id);
+    const { answers } = req.body;
+    if (!Array.isArray(answers)) return res.status(400).json({ error: 'Formato de respuestas inválido' });
+
+    const doc = await db.getDocumentById(docId);
+    if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
+
+    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    const quiz = await db.getQuizByDocument(docId);
+    if (!quiz) return res.status(404).json({ error: 'Cuestionario no encontrado' });
+
+    const questions = quiz.questions;
+    let score = 0;
+    const feedback = questions.map((q, idx) => {
+      const userAns = answers[idx] || '';
+      const isCorrect = userAns.trim().toUpperCase().charAt(0) === q.correct.trim().toUpperCase().charAt(0);
+      if (isCorrect) score++;
+      return {
+        questionIndex: idx,
+        userAnswer: userAns,
+        correctAnswer: q.correct,
+        isCorrect,
+        explanation: q.explanation
+      };
+    });
+
+    const passed = score === questions.length; // requiere 100% (3/3)
+
+    if (passed) {
+      await db.updateDocumentQuizPassed(req.user.id, docId, score);
+      await db.logActivity(req.user.id, req.user.username, 'pass_quiz', notebook.id, notebook.name, doc.id, doc.name, `Aprobó cuestionario de "${doc.name}" con puntaje ${score}/${questions.length}`);
+    }
+
+    res.json({ passed, score, total: questions.length, feedback });
+  } catch (err) {
+    console.error('[quiz:submit]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.get('/api/notebooks/:id/final-exam', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    // Verificar que aprobó todos los cuestionarios
+    const progress = await db.getNotebookProgress(notebook.id, req.user.id);
+    const documents = await db.getDocumentsByNotebook(notebook.id);
+
+    const allPassed = documents.length > 0 && documents.every(d => {
+      const p = progress.find(pr => pr.document_id === d.id);
+      return p && p.quiz_passed;
+    });
+
+    if (!allPassed) {
+      return res.status(400).json({ error: 'Debes completar y aprobar todos los cuestionarios previos antes de tomar el examen final.' });
+    }
+
+    let exam = await db.getFinalExam(req.user.id, notebook.id);
+    let questions;
+
+    if (exam && exam.questions) {
+      questions = exam.questions;
+    } else {
+      console.log(`[final-exam] Generando examen final integrador para notebook ${notebookId}…`);
+      const { generateFinalExam } = require('./ai');
+      const docsWithText = await Promise.all(
+        documents.map(async d => await db.getDocumentById(d.id))
+      );
+      questions = await generateFinalExam(docsWithText);
+      await db.saveFinalExam(req.user.id, notebook.id, false, 0, questions);
+    }
+
+    // Ocultar respuestas y explicaciones
+    const questionsForClient = questions.map(q => ({
+      question: q.question,
+      options: q.options
+    }));
+
+    res.json({ exam: { notebook_id: notebookId, questions: questionsForClient } });
+  } catch (err) {
+    console.error('[final-exam:get]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.post('/api/notebooks/:id/final-exam/submit', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const { answers } = req.body;
+    if (!Array.isArray(answers)) return res.status(400).json({ error: 'Formato de respuestas inválido' });
+
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    const exam = await db.getFinalExam(req.user.id, notebook.id);
+    if (!exam || !exam.questions) return res.status(404).json({ error: 'Examen final no generado previamente' });
+
+    const questions = exam.questions;
+    let score = 0;
+    const feedback = questions.map((q, idx) => {
+      const userAns = answers[idx] || '';
+      const isCorrect = userAns.trim().toUpperCase().charAt(0) === q.correct.trim().toUpperCase().charAt(0);
+      if (isCorrect) score++;
+      return {
+        questionIndex: idx,
+        userAnswer: userAns,
+        correctAnswer: q.correct,
+        isCorrect,
+        explanation: q.explanation
+      };
+    });
+
+    const passed = score >= 4; // Aprueba con 4/5 correctas (80%)
+
+    await db.saveFinalExam(req.user.id, notebook.id, passed, score, questions);
+
+    if (passed) {
+      await db.logActivity(req.user.id, req.user.username, 'pass_final_exam', notebook.id, notebook.name, null, null, `Aprobó examen final del notebook con puntaje ${score}/${questions.length}`);
+    } else {
+      await db.logActivity(req.user.id, req.user.username, 'fail_final_exam', notebook.id, notebook.name, null, null, `Reprobó examen final del notebook con puntaje ${score}/${questions.length}`);
+    }
+
+    res.json({ passed, score, total: questions.length, feedback });
+  } catch (err) {
+    console.error('[final-exam:submit]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+
+
 
 
 // ─── Keep-alive (Render free tier: suspende a los 15 min sin tráfico) ────────

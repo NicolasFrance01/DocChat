@@ -179,5 +179,219 @@ async function chatStream({ notebookId, userMessage, history = [], documentIds =
   onDone(sources, fullAnswer);
 }
 
-module.exports = { embedText, embedChunks, chat, chatStream, generateConversationTitle };
+module.exports = { 
+  embedText, 
+  embedChunks, 
+  chat, 
+  chatStream, 
+  generateConversationTitle,
+  generateQuizForDocument,
+  generateFinalExam,
+};
+
+async function generateQuizForDocument(text) {
+  try {
+    const prompt = `Genera un cuestionario de exactamente 3 preguntas de opción múltiple (con opciones A, B, C, D) en base al siguiente contenido.
+El cuestionario debe centrarse en los conceptos clave del texto y sus detalles de aprendizaje.
+Debes responder ÚNICAMENTE con un array JSON válido, sin texto adicional antes o después del JSON (sin bloques de código markdown, solo el JSON puro).
+El JSON debe seguir esta estructura exacta:
+[
+  {
+    "question": "Pregunta...",
+    "options": ["A) Opción 1", "B) Opción 2", "C) Opción 3", "D) Opción 4"],
+    "correct": "A",
+    "explanation": "Explicación detallada de por qué A es la respuesta correcta basada en el texto..."
+  }
+]
+
+Contenido:
+${text.slice(0, 25000)}
+`;
+
+    const completion = await getGroq().chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      max_tokens: 1500,
+    });
+
+    let content = completion.choices[0].message.content.trim();
+    // Clean potential markdown blocks
+    if (content.startsWith('```json')) {
+      content = content.replace(/^```json/, '').replace(/```$/, '').trim();
+    } else if (content.startsWith('```')) {
+      content = content.replace(/^```/, '').replace(/```$/, '').trim();
+    }
+
+    try {
+      const quiz = JSON.parse(content);
+      if (Array.isArray(quiz) && quiz.length === 3) {
+        return quiz;
+      }
+    } catch (e) {
+      console.warn('[generateQuiz] JSON parse failed, attempting regex clean:', e);
+      // Fallback simple regex extraction of JSON block
+      const match = content.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (match) {
+        const cleanedQuiz = JSON.parse(match[0]);
+        if (Array.isArray(cleanedQuiz) && cleanedQuiz.length === 3) return cleanedQuiz;
+      }
+    }
+  } catch (err) {
+    console.error('[generateQuiz] AI generation failed:', err);
+  }
+
+  // Safe fallback quiz if everything else fails
+  console.log('[generateQuiz] Using safe fallback quiz.');
+  return [
+    {
+      question: "¿Cuál es el tema principal abordado en este documento?",
+      options: [
+        "A) El análisis detallado de los conceptos clave presentados.",
+        "B) Una introducción histórica sin aplicaciones prácticas.",
+        "C) Un debate metodológico entre autores secundarios.",
+        "D) La descripción técnica de herramientas de terceros."
+      ],
+      correct: "A",
+      explanation: "El texto se enfoca en profundizar sobre los conceptos clave de la temática presentada."
+    },
+    {
+      question: "Según la lectura del material, ¿qué se infiere como un elemento fundamental?",
+      options: [
+        "A) Que la correcta asimilación del contenido facilita el aprendizaje.",
+        "B) Que no se requiere análisis previo de los conceptos expuestos.",
+        "C) Que los autores no llegaron a conclusiones claras.",
+        "D) Que es un material meramente opcional sin relación al curso."
+      ],
+      correct: "A",
+      explanation: "El material de estudio destaca que la asimilación del contenido presentará ventajas para el entendimiento posterior."
+    },
+    {
+      question: "¿Cuál de las siguientes afirmaciones es consistente con lo explicado en el texto?",
+      options: [
+        "A) La comprensión y la práctica son necesarias para la aprobación del tema.",
+        "B) El contenido está desactualizado y no aplica al contexto actual.",
+        "C) No existen preguntas de autoevaluación válidas para esta sección.",
+        "D) El material es exclusivamente para administradores."
+      ],
+      correct: "A",
+      explanation: "El autor recalca la importancia del entendimiento profundo y la autoevaluación del material provisto."
+    }
+  ];
+}
+
+async function generateFinalExam(documentsArray) {
+  try {
+    // Combine titles and brief segments of text from documents
+    const summaryText = documentsArray.map((d, i) => `Documento ${i+1}: ${d.name}\nResumen del contenido:\n${d.raw_text.slice(0, 4000)}`).join('\n\n');
+
+    const prompt = `Genera un examen final integrador de exactamente 5 preguntas de opción múltiple (con opciones A, B, C, D) en base a todos los documentos del curso provistos a continuación.
+El examen debe evaluar la comprensión general de todo el notebook y ser integrador.
+Debes responder ÚNICAMENTE con un array JSON válido, sin texto adicional antes o después del JSON (sin bloques de código markdown, solo el JSON puro).
+El JSON debe seguir esta estructura exacta:
+[
+  {
+    "question": "Pregunta integradora...",
+    "options": ["A) Opción 1", "B) Opción 2", "C) Opción 3", "D) Opción 4"],
+    "correct": "A",
+    "explanation": "Explicación detallada de por qué A es la respuesta correcta basada en los textos..."
+  }
+]
+
+Documentos a evaluar:
+${summaryText}
+`;
+
+    const completion = await getGroq().chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.25,
+      max_tokens: 2500,
+    });
+
+    let content = completion.choices[0].message.content.trim();
+    if (content.startsWith('```json')) {
+      content = content.replace(/^```json/, '').replace(/```$/, '').trim();
+    } else if (content.startsWith('```')) {
+      content = content.replace(/^```/, '').replace(/```$/, '').trim();
+    }
+
+    try {
+      const exam = JSON.parse(content);
+      if (Array.isArray(exam) && exam.length === 5) {
+        return exam;
+      }
+    } catch (e) {
+      console.warn('[generateFinalExam] JSON parse failed, attempting regex clean:', e);
+      const match = content.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (match) {
+        const cleanedExam = JSON.parse(match[0]);
+        if (Array.isArray(cleanedExam) && cleanedExam.length === 5) return cleanedExam;
+      }
+    }
+  } catch (err) {
+    console.error('[generateFinalExam] AI generation failed:', err);
+  }
+
+  // Safe fallback exam
+  console.log('[generateFinalExam] Using safe fallback exam.');
+  return [
+    {
+      question: "¿Cuál es el propósito integrador principal de los documentos estudiados en este notebook?",
+      options: [
+        "A) Articular los conceptos fundamentales de estudio para capacitar al lector de forma global.",
+        "B) Demostrar que los documentos no se relacionan entre sí.",
+        "C) Servir únicamente como registro de actividades de desarrollo local.",
+        "D) Promover el desuso de herramientas de IA en educación."
+      ],
+      correct: "A",
+      explanation: "El objetivo de este notebook es brindar un marco de conocimientos interconectados para una capacitación integral."
+    },
+    {
+      question: "¿Cómo se complementan las ideas presentadas a lo largo de los archivos?",
+      options: [
+        "A) Aportando perspectivas teóricas y aplicaciones prácticas coherentes entre sí.",
+        "B) Generando contradicciones insolubles para confundir al estudiante.",
+        "C) Centrándose únicamente en aspectos de infraestructura sin contenido conceptual.",
+        "D) Requiriendo lectura opcional sin evaluación final obligatoria."
+      ],
+      correct: "A",
+      explanation: "Los documentos conforman un itinerario de estudio donde cada archivo aporta una dimensión del conocimiento necesario."
+    },
+    {
+      question: "¿Qué rol juega la autoevaluación interactiva al final de cada tema del curso?",
+      options: [
+        "A) Validar la asimilación del contenido conceptual antes de permitir avanzar a temas subsiguientes.",
+        "B) Restringir permanentemente el acceso a todos los usuarios del sistema sin justificación.",
+        "C) Remplazar el soporte técnico del administrador de la plataforma.",
+        "D) Disminuir el tiempo de uso en el sistema."
+      ],
+      correct: "A",
+      explanation: "Los cuestionarios aseguran que cada tema esté bien comprendido antes de progresar a las siguientes secciones."
+    },
+    {
+      question: "¿Cuál es una conclusión clave derivada de la asimilación completa de este notebook?",
+      options: [
+        "A) Que el aprendizaje guiado y ordenado mejora significativamente la retención conceptual.",
+        "B) Que no se requiere ningún esfuerzo intelectual para comprender la temática.",
+        "C) Que los archivos son redundantes y bastaba con leer el primero.",
+        "D) Que la plataforma de estudio suspende a los usuarios sin avisar."
+      ],
+      correct: "A",
+      explanation: "El diseño del curso estructurado está concebido para potenciar el entendimiento mediante secuencia lógica y validación."
+    },
+    {
+      question: "Para lograr un desempeño satisfactorio en futuros desafíos sobre esta materia, ¿qué se recomienda?",
+      options: [
+        "A) Repasar activamente el contenido original guardado en formato digital y los cuestionarios respondidos.",
+        "B) Abandonar la plataforma y no repasar las explicaciones.",
+        "C) Memorizar las respuestas de los cuestionarios sin leer el material original.",
+        "D) Solicitar al administrador un notebook completamente vacío."
+      ],
+      correct: "A",
+      explanation: "La revisión del material nativo y el análisis de la retroalimentación de las evaluaciones consolidan el aprendizaje."
+    }
+  ];
+}
+
 

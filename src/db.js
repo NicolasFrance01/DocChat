@@ -23,6 +23,9 @@ async function initDb() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed BOOLEAN NOT NULL DEFAULT FALSE;`).catch(() => {});
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';`).catch(() => {});
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES messages(id) ON DELETE CASCADE;`).catch(() => {});
+  await pool.query(`ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS ai_assistant_enabled BOOLEAN NOT NULL DEFAULT FALSE;`).catch(() => {});
+  await pool.query(`ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS document_order INTEGER[] DEFAULT '{}';`).catch(() => {});
+
 
   // Seed admin if not exists
   const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
@@ -175,11 +178,12 @@ async function getNotebookById(id, userId, role = 'user') {
   return rows[0] || null;
 }
 
-async function createNotebook(userId, name, description = null) {
+async function createNotebook(userId, name, description = null, aiAssistantEnabled = false) {
   const { rows } = await pool.query(
-    'INSERT INTO notebooks (user_id, name, description) VALUES ($1, $2, $3) RETURNING *',
-    [userId, name, description]
+    'INSERT INTO notebooks (user_id, name, description, ai_assistant_enabled) VALUES ($1, $2, $3, $4) RETURNING *',
+    [userId, name, description, aiAssistantEnabled]
   );
+
   return rows[0];
 }
 
@@ -472,5 +476,89 @@ module.exports = {
   // messages
   getMessagesByConversation,
   saveMessage,
+  // learning methods
+  getNotebookProgress,
+  updateDocumentRead,
+  updateDocumentQuizPassed,
+  getQuizByDocument,
+  saveQuizForDocument,
+  getFinalExam,
+  saveFinalExam,
+  updateNotebookDocumentOrder,
 };
+
+async function getNotebookProgress(notebookId, userId) {
+  const { rows } = await pool.query(
+    `SELECT d.id AS document_id, 
+            COALESCE(p.read_checked, FALSE) AS read_checked, 
+            COALESCE(p.quiz_passed, FALSE) AS quiz_passed, 
+            p.score, 
+            p.completed_at
+     FROM documents d
+     LEFT JOIN user_document_progress p ON p.document_id = d.id AND p.user_id = $2
+     WHERE d.notebook_id = $1`,
+    [notebookId, userId]
+  );
+  return rows;
+}
+
+async function updateDocumentRead(userId, docId, checked) {
+  await pool.query(
+    `INSERT INTO user_document_progress (user_id, document_id, read_checked)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, document_id) 
+     DO UPDATE SET read_checked = EXCLUDED.read_checked`,
+    [userId, docId, checked]
+  );
+}
+
+async function updateDocumentQuizPassed(userId, docId, score) {
+  await pool.query(
+    `INSERT INTO user_document_progress (user_id, document_id, read_checked, quiz_passed, score, completed_at)
+     VALUES ($1, $2, TRUE, TRUE, $3, NOW())
+     ON CONFLICT (user_id, document_id) 
+     DO UPDATE SET quiz_passed = TRUE, score = EXCLUDED.score, completed_at = NOW()`,
+    [userId, docId, score]
+  );
+}
+
+async function getQuizByDocument(docId) {
+  const { rows } = await pool.query('SELECT * FROM document_quizzes WHERE document_id = $1', [docId]);
+  return rows[0] || null;
+}
+
+async function saveQuizForDocument(docId, questions) {
+  await pool.query(
+    `INSERT INTO document_quizzes (document_id, questions)
+     VALUES ($1, $2)
+     ON CONFLICT (document_id) DO UPDATE SET questions = EXCLUDED.questions`,
+    [docId, JSON.stringify(questions)]
+  );
+}
+
+async function getFinalExam(userId, notebookId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM user_final_exams WHERE user_id = $1 AND notebook_id = $2',
+    [userId, notebookId]
+  );
+  return rows[0] || null;
+}
+
+async function saveFinalExam(userId, notebookId, passed, score, questions) {
+  await pool.query(
+    `INSERT INTO user_final_exams (user_id, notebook_id, passed, score, questions, completed_at)
+     VALUES ($1, $2, $3, $4, $5, NOW())
+     ON CONFLICT (user_id, notebook_id) 
+     DO UPDATE SET passed = EXCLUDED.passed, score = EXCLUDED.score, questions = EXCLUDED.questions, completed_at = NOW()`,
+    [userId, notebookId, passed, score, JSON.stringify(questions)]
+  );
+}
+
+async function updateNotebookDocumentOrder(notebookId, order) {
+  await pool.query(
+    'UPDATE notebooks SET document_order = $1 WHERE id = $2',
+    [order, notebookId]
+  );
+}
+
 
