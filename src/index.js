@@ -170,6 +170,58 @@ app.post('/api/notebooks/:id', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/api/notebooks/:id/reorder', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const { order } = req.body;
+    if (!Array.isArray(order)) return res.status(400).json({ error: 'Formato de orden inválido' });
+
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    await db.updateNotebookDocumentOrder(notebookId, order);
+    await db.logActivity(req.user.id, req.user.username, 'reorder_documents', notebookId, notebook.name, null, null, `Se actualizó el orden del camino de aprendizaje de "${notebook.name}"`);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[notebooks:reorder]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.post('/api/notebooks/:id/suggest-order', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    const documents = await db.getDocumentsByNotebook(notebookId);
+    if (documents.length <= 1) {
+      return res.json({
+        order: documents.map(d => d.id),
+        explanation: 'Se necesitan al menos 2 documentos para que la IA sugiera una secuencia pedagógica.'
+      });
+    }
+
+    const { suggestDocumentOrder } = require('./ai');
+    const docMetaList = documents.map(d => ({ id: d.id, name: d.name }));
+    const suggestion = await suggestDocumentOrder(docMetaList);
+
+    res.json(suggestion);
+  } catch (err) {
+    console.error('[notebooks:suggest-order]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 app.delete('/api/notebooks/:id', requireAuth, async (req, res) => {
   try {
     const notebookId = Number(req.params.id);

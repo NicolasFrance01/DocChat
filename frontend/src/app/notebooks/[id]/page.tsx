@@ -6,6 +6,7 @@ import {
   getConversations, getMessages, sendChat,
   searchUsers, getNotebookUsers, addNotebookUser, removeNotebookUser, createInvitation, changePassword,
   getNotebookProgress, markDocumentRead, getDocumentQuiz, submitDocumentQuiz, getFinalExam, submitFinalExam,
+  reorderNotebookDocuments, suggestOptimalOrder,
   type Document, type Message, type Source, type User, type NotebookUser, type Conversation,
   type DocumentProgress, type QuizQuestion
 } from '@/lib/api';
@@ -90,6 +91,13 @@ export default function NotebookPage() {
   const [userProgress, setUserProgress] = useState<Record<number, DocumentProgress>>({});
   const [finalExamStatus, setFinalExamStatus] = useState<{ passed: boolean; score: number } | null>(null);
 
+  // Course Reordering States
+  const [showOrderModal, setShowOrderModal] = useState(false);
+  const [tempOrder, setTempOrder] = useState<number[]>([]);
+  const [suggestingOrder, setSuggestingOrder] = useState(false);
+  const [suggestedExplanation, setSuggestedExplanation] = useState('');
+  const [reorderLoading, setReorderLoading] = useState(false);
+
   // Quiz Modal States
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [quizDocId, setQuizDocId] = useState<number | null>(null);
@@ -161,6 +169,65 @@ export default function NotebookPage() {
 
     setRenderedMessages(activePath);
   }, [allMessages, selectedVersions]);
+
+  // ── Course Reordering Handlers ─────────────────────────────────────────────
+  function handleOpenReorderModal() {
+    // Initialize temporary order with documentOrder or default documents list
+    if (documentOrder && documentOrder.length > 0) {
+      setTempOrder([...documentOrder]);
+    } else {
+      setTempOrder(docs.map(d => d.id));
+    }
+    setSuggestedExplanation('');
+    setShowOrderModal(true);
+  }
+
+  function handleMoveDocument(index: number, direction: 'up' | 'down') {
+    const nextIndex = direction === 'up' ? index - 1 : index + 1;
+    if (nextIndex < 0 || nextIndex >= tempOrder.length) return;
+    const updated = [...tempOrder];
+    const [removed] = updated.splice(index, 1);
+    updated.splice(nextIndex, 0, removed);
+    setTempOrder(updated);
+  }
+
+  async function handleAISuggestOrder() {
+    setSuggestingOrder(true);
+    setSuggestedExplanation('');
+    try {
+      const data = await suggestOptimalOrder(notebookId);
+      setTempOrder(data.order);
+      setSuggestedExplanation(data.explanation);
+    } catch (err: any) {
+      alert(err.message || 'Error al obtener sugerencias de la IA');
+    } finally {
+      setSuggestingOrder(false);
+    }
+  }
+
+  async function handleSaveReorder() {
+    setReorderLoading(true);
+    try {
+      await reorderNotebookDocuments(notebookId, tempOrder);
+      setDocumentOrder(tempOrder);
+      
+      // Re-order docs list in state
+      const reorderedDocs = [...docs].sort((a, b) => {
+        const idxA = tempOrder.indexOf(a.id);
+        const idxB = tempOrder.indexOf(b.id);
+        if (idxA === -1 && idxB === -1) return 0;
+        if (idxA === -1) return 1;
+        if (idxB === -1) return -1;
+        return idxA - idxB;
+      });
+      setDocs(reorderedDocs);
+      setShowOrderModal(false);
+    } catch (err: any) {
+      alert(err.message || 'Error al guardar el nuevo orden.');
+    } finally {
+      setReorderLoading(false);
+    }
+  }
 
   // ── Loaders ────────────────────────────────────────────────────────────────
   async function loadDocs() {
@@ -924,6 +991,14 @@ export default function NotebookPage() {
                   {urlLoading ? '...' : 'URL'}
                 </button>
               </form>
+              {aiAssistantEnabled && docs.length > 0 && (
+                <button
+                  onClick={handleOpenReorderModal}
+                  className="w-full mt-2 flex items-center justify-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl py-2.5 text-xs font-bold transition-all shadow-sm border border-indigo-100/40"
+                >
+                  ⚙️ Organizar Temario
+                </button>
+              )}
             </div>
           )}
 
@@ -1098,19 +1173,79 @@ export default function NotebookPage() {
           {/* Messages Display (Tree rendering active branch) */}
           <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6 bg-gray-50/20">
             {renderedMessages.length === 0 && !streaming && (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-3.5 text-center select-none animate-fade-in">
-                <div className="w-16 h-16 bg-indigo-50/50 text-indigo-500 rounded-2xl flex items-center justify-center shadow-inner">
-                  <svg className="w-9 h-9" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-                  </svg>
+              aiAssistantEnabled && docs.length === 0 ? (
+                <div className="max-w-xl mx-auto flex flex-col items-center justify-center h-full space-y-6 text-center select-none animate-fade-in p-6 my-auto">
+                  <div className="w-14 h-14 bg-indigo-55 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center shadow-md animate-pulse">
+                    <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                    </svg>
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="font-extrabold text-gray-900 text-lg tracking-tight">🎓 Modo Curso con Agente de IA</h3>
+                    <p className="text-xs text-gray-400 max-w-sm mx-auto leading-relaxed">
+                      Este notebook está configurado como un camino de aprendizaje estructurado secuencialmente por IA.
+                    </p>
+                  </div>
+
+                  <div className="w-full bg-white border border-gray-200 rounded-2xl p-5 shadow-sm text-left space-y-3.5">
+                    <h4 className="font-bold text-[10px] text-gray-450 uppercase tracking-wider select-none">Pasos para estructurar tu curso</h4>
+                    
+                    <div className="space-y-3.5">
+                      <div className="flex gap-3">
+                        <div className="w-6 h-6 bg-indigo-50 text-indigo-700 rounded-full flex items-center justify-center font-extrabold text-xs shrink-0 select-none">
+                          1
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-xs font-bold text-gray-800">Cargar tu material de estudio</p>
+                          <p className="text-[10px] text-gray-400 leading-relaxed">Usa la barra lateral izquierda para subir tus archivos PDF, Word o insertar URLs web.</p>
+                          {me?.role !== 'user' && (
+                            <button
+                              onClick={() => fileRef.current?.click()}
+                              className="mt-1 text-[10px] text-indigo-650 hover:text-indigo-800 font-extrabold flex items-center gap-1 hover:underline"
+                            >
+                              ➕ Cargar primer archivo ahora
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex gap-3">
+                        <div className="w-6 h-6 bg-indigo-50 text-indigo-700 rounded-full flex items-center justify-center font-extrabold text-xs shrink-0 select-none">
+                          2
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-xs font-bold text-gray-800">Estructurar secuencia y etapas</p>
+                          <p className="text-[10px] text-gray-400 leading-relaxed">Tras subir tus archivos, dispondrás de la herramienta **"⚙️ Organizar Temario"** para ordenarlos manualmente o dejar que la IA sugiera una secuencia pedagógica óptima.</p>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-3">
+                        <div className="w-6 h-6 bg-indigo-50 text-indigo-700 rounded-full flex items-center justify-center font-extrabold text-xs shrink-0 select-none">
+                          3
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-xs font-bold text-gray-800">Cuestionarios interactivos y Examen Final</p>
+                          <p className="text-[10px] text-gray-400 leading-relaxed">La IA autogenerará cuestionarios interactivos de 3 preguntas para cada archivo y un examen integrador final de 5 preguntas al completar el curso.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <p className="font-bold text-gray-800 text-base">Hacé una pregunta sobre tus documentos</p>
-                  <p className="text-xs text-gray-400 max-w-xs leading-relaxed">
-                    La IA buscará en las páginas de tus archivos seleccionados y responderá con citas detalladas
-                  </p>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-3.5 text-center select-none animate-fade-in">
+                  <div className="w-16 h-16 bg-indigo-50/50 text-indigo-500 rounded-2xl flex items-center justify-center shadow-inner">
+                    <svg className="w-9 h-9" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                    </svg>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="font-bold text-gray-800 text-base">Hacé una pregunta sobre tus documentos</p>
+                    <p className="text-xs text-gray-400 max-w-xs leading-relaxed">
+                      La IA buscará en las páginas de tus archivos seleccionados y responderá con citas detalladas
+                    </p>
+                  </div>
                 </div>
-              </div>
+              )
             )}
 
             {renderedMessages.map(msg => (
@@ -1934,6 +2069,133 @@ export default function NotebookPage() {
                 )}
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {/* ─── Modal: Organizar Temario del Curso ─────────────────────────────── */}
+      {showOrderModal && (
+        <div className="fixed inset-0 bg-black/45 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl border border-gray-100 overflow-hidden animate-slide-up flex flex-col max-h-[85vh]">
+            
+            {/* Header */}
+            <div className="px-6 py-4.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/50 select-none">
+              <div className="flex items-center gap-2">
+                <span className="text-lg">⚙️</span>
+                <div>
+                  <h3 className="font-bold text-gray-950 text-sm sm:text-base text-gray-900">Organizar Camino de Aprendizaje</h3>
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Establece la secuencia ordenada de lectura del curso</p>
+                </div>
+              </div>
+              <button
+                disabled={reorderLoading || suggestingOrder}
+                onClick={() => setShowOrderModal(false)}
+                className="text-gray-400 hover:text-gray-600 transition-colors p-1"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              <div className="flex items-center justify-between select-none">
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Documentos del Curso ({tempOrder.length})</span>
+                <button
+                  type="button"
+                  disabled={suggestingOrder || tempOrder.length <= 1}
+                  onClick={handleAISuggestOrder}
+                  className="bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-600 hover:to-yellow-700 disabled:opacity-50 text-white font-extrabold text-[10px] px-3.5 py-2 rounded-xl transition-all shadow-sm flex items-center gap-1 hover:shadow"
+                >
+                  {suggestingOrder ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Analizando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>🪄 Sugerir secuencia con IA</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Explanatory text suggested by AI */}
+              {suggestedExplanation && (
+                <div className="bg-amber-50/40 border border-amber-150 rounded-2xl p-4 animate-fade-in select-text">
+                  <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider mb-1">Fundamentación Pedagógica de la IA:</p>
+                  <p className="text-xs text-amber-900 font-medium leading-relaxed select-text">{suggestedExplanation}</p>
+                </div>
+              )}
+
+              {tempOrder.length === 0 ? (
+                <p className="text-xs text-gray-405 text-gray-450 text-center py-8">Carga documentos en el notebook para poder ordenarlos.</p>
+              ) : (
+                <div className="space-y-2 select-none">
+                  {tempOrder.map((docId, index) => {
+                    const docItem = docs.find(d => d.id === docId);
+                    if (!docItem) return null;
+
+                    return (
+                      <div
+                        key={docId}
+                        className="flex items-center justify-between bg-gray-50/50 border border-gray-150 rounded-2xl p-3.5 shadow-sm hover:border-indigo-200 transition-colors"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-6 h-6 bg-indigo-50 text-indigo-700 font-extrabold text-[11px] rounded-lg flex items-center justify-center shrink-0">
+                            {index + 1}
+                          </div>
+                          <span className="text-xs font-bold text-gray-800 truncate" title={docItem.name}>
+                            {docItem.name}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            disabled={index === 0 || reorderLoading || suggestingOrder}
+                            onClick={() => handleMoveDocument(index, 'up')}
+                            className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-gray-400 p-1 hover:bg-white rounded transition-colors"
+                            title="Subir nivel"
+                          >
+                            ▲
+                          </button>
+                          <button
+                            type="button"
+                            disabled={index === tempOrder.length - 1 || reorderLoading || suggestingOrder}
+                            onClick={() => handleMoveDocument(index, 'down')}
+                            className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-gray-400 p-1 hover:bg-white rounded transition-colors"
+                            title="Bajar nivel"
+                          >
+                            ▼
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-2 shrink-0">
+              <button
+                type="button"
+                disabled={reorderLoading || suggestingOrder}
+                onClick={() => setShowOrderModal(false)}
+                className="text-xs text-gray-500 hover:text-gray-855 hover:text-gray-700 font-extrabold px-4 py-2 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={reorderLoading || suggestingOrder || tempOrder.length === 0}
+                onClick={handleSaveReorder}
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-extrabold rounded-xl px-5 py-2.5 text-xs transition-all shadow-md shadow-indigo-100"
+              >
+                {reorderLoading ? 'Guardando...' : 'Guardar Secuencia'}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -111,6 +111,8 @@ export default function NotebooksPage() {
       const data = await createNotebook(name.trim(), description.trim() || undefined, aiAssistantEnabled);
       setNotebooks(prev => [data.notebook, ...prev]);
       setName(''); setDescription(''); setAiAssistantEnabled(false); setShowForm(false);
+      // Auto-redirect to the workspace!
+      router.push(`/notebooks/${data.notebook.id}`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Error al crear');
     } finally {

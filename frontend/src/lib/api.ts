@@ -120,6 +120,19 @@ export async function updateNotebook(id: number, name: string, description?: str
   });
 }
 
+export async function reorderNotebookDocuments(notebookId: number, order: number[]) {
+  return request<{ ok: boolean }>(`/api/notebooks/${notebookId}/reorder`, {
+    method: 'POST',
+    body: JSON.stringify({ order }),
+  });
+}
+
+export async function suggestOptimalOrder(notebookId: number) {
+  return request<{ order: number[]; explanation: string }>(`/api/notebooks/${notebookId}/suggest-order`, {
+    method: 'POST',
+  });
+}
+
 // ─── Notebook Access Control & Invitations ────────────────────────────────────
 
 export async function getNotebookUsers(notebookId: number) {

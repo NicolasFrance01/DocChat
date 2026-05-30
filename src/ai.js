@@ -187,6 +187,7 @@ module.exports = {
   generateConversationTitle,
   generateQuizForDocument,
   generateFinalExam,
+  suggestDocumentOrder,
 };
 
 async function generateQuizForDocument(text) {
@@ -392,6 +393,50 @@ ${summaryText}
       explanation: "La revisión del material nativo y el análisis de la retroalimentación de las evaluaciones consolidan el aprendizaje."
     }
   ];
+}
+
+async function suggestDocumentOrder(documents) {
+  try {
+    const docList = documents.map(d => `- ID: ${d.id}, Nombre: "${d.name}"`).join('\n');
+    const prompt = `Analiza los siguientes títulos de documentos de un curso de estudio y sugiere el orden de lectura/estudio más pedagógico y lógico para un estudiante (por ejemplo, conceptos introductorios o básicos primero, seguidos de temas intermedios y luego avanzados).
+Debes responder ÚNICAMENTE con un objeto JSON válido, sin bloques de código markdown ni texto adicional antes o después del JSON.
+El JSON debe seguir esta estructura exacta:
+{
+  "order": [lista de IDs numéricos en el orden sugerido, por ejemplo [2, 1, 3]],
+  "explanation": "Una breve explicación en español (máximo 2 líneas) de por qué se sugiere este orden pedagógico y lógico de aprendizaje."
+}
+
+Documentos:
+${docList}
+`;
+
+    const completion = await getGroq().chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      max_tokens: 800,
+    });
+
+    let content = completion.choices[0].message.content.trim();
+    if (content.startsWith('```json')) {
+      content = content.replace(/^```json/, '').replace(/```$/, '').trim();
+    } else if (content.startsWith('```')) {
+      content = content.replace(/^```/, '').replace(/```$/, '').trim();
+    }
+
+    const parsed = JSON.parse(content);
+    if (!Array.isArray(parsed.order) || typeof parsed.explanation !== 'string') {
+      throw new Error('Formato de respuesta del sugeridor de orden inválido');
+    }
+    return parsed;
+  } catch (err) {
+    console.error('[suggestDocumentOrder] failed:', err);
+    // Fallback: return original order
+    return {
+      order: documents.map(d => d.id),
+      explanation: 'No se pudo generar la sugerencia por IA. Se mantiene el orden cronológico de carga.'
+    };
+  }
 }
 
 
