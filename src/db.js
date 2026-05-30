@@ -29,6 +29,9 @@ async function initDb() {
   // Migrate old 'admin' username to new '@admin' format if present
   await pool.query("UPDATE users SET username = '@admin' WHERE username = 'admin';").catch(() => {});
 
+  // Force seed admin to have password_changed = TRUE and active status to prevent accidental 48h history suspensions
+  await pool.query("UPDATE users SET password_changed = TRUE, status = 'active' WHERE username = '@admin';").catch(() => {});
+
   const existing = await pool.query('SELECT id FROM users WHERE username = $1', ['@admin']);
   if (existing.rowCount === 0) {
     const hash = await bcrypt.hash(adminPassword, 10);
@@ -38,6 +41,7 @@ async function initDb() {
     );
     console.log('[db] Admin user created');
   }
+
 
 }
 
