@@ -26,15 +26,19 @@ async function initDb() {
 
   // Seed admin if not exists
   const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
-  const existing = await pool.query('SELECT id FROM users WHERE username = $1', ['admin']);
+  // Migrate old 'admin' username to new '@admin' format if present
+  await pool.query("UPDATE users SET username = '@admin' WHERE username = 'admin';").catch(() => {});
+
+  const existing = await pool.query('SELECT id FROM users WHERE username = $1', ['@admin']);
   if (existing.rowCount === 0) {
     const hash = await bcrypt.hash(adminPassword, 10);
     await pool.query(
       "INSERT INTO users (username, password_hash, role, full_name, password_changed) VALUES ($1, $2, 'admin', 'Administrador', TRUE)",
-      ['admin', hash]
+      ['@admin', hash]
     );
     console.log('[db] Admin user created');
   }
+
 }
 
 // ─── Users ────────────────────────────────────────────────────────────────────
