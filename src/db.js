@@ -447,6 +447,7 @@ module.exports = {
   getNotebookById,
   createNotebook,
   deleteNotebook,
+  updateNotebook,
   // notebook ACL & sharing
   getNotebookUsers,
   addNotebookUser,
@@ -559,6 +560,14 @@ async function updateNotebookDocumentOrder(notebookId, order) {
     'UPDATE notebooks SET document_order = $1 WHERE id = $2',
     [order, notebookId]
   );
+}
+
+async function updateNotebook(id, name, description, aiAssistantEnabled) {
+  const { rows } = await pool.query(
+    'UPDATE notebooks SET name = $1, description = $2, ai_assistant_enabled = $3 WHERE id = $4 RETURNING *',
+    [name, description, aiAssistantEnabled, id]
+  );
+  return rows[0] || null;
 }
 
 

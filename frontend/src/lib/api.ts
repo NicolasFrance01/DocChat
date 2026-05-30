@@ -113,6 +113,13 @@ export async function deleteNotebook(id: number) {
   return request(`/api/notebooks/${id}`, { method: 'DELETE' });
 }
 
+export async function updateNotebook(id: number, name: string, description?: string, aiAssistantEnabled?: boolean) {
+  return request<{ notebook: Notebook }>(`/api/notebooks/${id}`, {
+    method: 'POST',
+    body: JSON.stringify({ name, description, ai_assistant_enabled: aiAssistantEnabled }),
+  });
+}
+
 // ─── Notebook Access Control & Invitations ────────────────────────────────────
 
 export async function getNotebookUsers(notebookId: number) {

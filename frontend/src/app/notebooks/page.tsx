@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  getNotebooks, createNotebook, deleteNotebook, logout,
+  getNotebooks, createNotebook, deleteNotebook, updateNotebook, logout,
   getUsers, createUser, deleteUser, resetUserPassword, getActivities, changePassword,
   type Notebook, type UserAdmin, type Activity, type User
 } from '@/lib/api';
@@ -22,6 +22,14 @@ export default function NotebooksPage() {
   const [description, setDescription] = useState('');
   const [aiAssistantEnabled, setAiAssistantEnabled] = useState(false);
   const [error, setError] = useState('');
+
+  // Notebook editing states
+  const [editingNotebook, setEditingNotebook] = useState<Notebook | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editAiAssistantEnabled, setEditAiAssistantEnabled] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [editLoading, setEditLoading] = useState(false);
 
   // Profile Modal State
   const [showProfile, setShowProfile] = useState(false);
@@ -120,6 +128,32 @@ export default function NotebooksPage() {
       if (showAdmin) loadAdminData(); // Refresh logs if admin is looking
     } catch (err: any) {
       alert(err.message || 'Error al eliminar');
+    }
+  }
+
+  // ── Edit Notebook Handlers ──────────────────────────────────────────────────
+  function handleStartEdit(nb: Notebook, e: React.MouseEvent) {
+    e.stopPropagation();
+    setEditingNotebook(nb);
+    setEditName(nb.name);
+    setEditDescription(nb.description || '');
+    setEditAiAssistantEnabled(!!nb.ai_assistant_enabled);
+    setEditError('');
+  }
+
+  async function handleUpdateNotebook(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingNotebook || !editName.trim()) return;
+    setEditLoading(true);
+    setEditError('');
+    try {
+      const data = await updateNotebook(editingNotebook.id, editName.trim(), editDescription.trim() || undefined, editAiAssistantEnabled);
+      setNotebooks(prev => prev.map(n => n.id === editingNotebook.id ? data.notebook : n));
+      setEditingNotebook(null);
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : 'Error al modificar notebook');
+    } finally {
+      setEditLoading(false);
     }
   }
 
@@ -385,14 +419,26 @@ export default function NotebooksPage() {
                       {nb.description && <p className="text-sm text-gray-500 font-medium mt-0.5 line-clamp-2 leading-relaxed">{nb.description}</p>}
                     </div>
                     {me.role === 'admin' || nb.user_id === me.id ? (
-                      <button
-                        onClick={e => handleDelete(nb.id, e)}
-                        className="ml-3 text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-1 hover:bg-red-50 rounded-lg"
-                      >
-                        <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                      </button>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-3 shrink-0">
+                        <button
+                          onClick={e => handleStartEdit(nb, e)}
+                          className="text-gray-400 hover:text-indigo-600 transition-colors p-1 hover:bg-indigo-50 rounded-lg"
+                          title="Modificar notebook"
+                        >
+                          <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                        </button>
+                        <button
+                          onClick={e => handleDelete(nb.id, e)}
+                          className="text-gray-450 hover:text-red-500 transition-colors p-1 hover:bg-red-50 rounded-lg"
+                          title="Eliminar notebook"
+                        >
+                          <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        </button>
+                      </div>
                     ) : null}
                   </div>
                 </div>
@@ -407,6 +453,79 @@ export default function NotebooksPage() {
           </div>
         )}
       </main>
+
+      {/* ─── Edit Notebook Modal ────────────────────────────────────────────── */}
+      {editingNotebook && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-30 animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl border border-gray-100 animate-slide-up">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-gray-900 text-lg">Modificar Notebook</h3>
+              <button onClick={() => setEditingNotebook(null)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateNotebook} className="space-y-4">
+              <div className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Nombre</label>
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    placeholder="Nombre del notebook"
+                    className="w-full border border-gray-300 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-semibold"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Descripción</label>
+                  <input
+                    type="text"
+                    value={editDescription}
+                    onChange={e => setEditDescription(e.target.value)}
+                    placeholder="Descripción (opcional)"
+                    className="w-full border border-gray-300 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all"
+                  />
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="checkbox"
+                    id="edit_ai_assistant_enabled"
+                    checked={editAiAssistantEnabled}
+                    onChange={e => setEditAiAssistantEnabled(e.target.checked)}
+                    className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                  />
+                  <label htmlFor="edit_ai_assistant_enabled" className="text-xs sm:text-sm font-semibold text-gray-700 cursor-pointer select-none">
+                    Habilitar ayuda del agente de IA (Cuestionarios y Camino de Aprendizaje)
+                  </label>
+                </div>
+              </div>
+
+              {editError && <p className="text-xs text-red-600 bg-red-50 rounded-lg p-2.5 font-medium">{editError}</p>}
+
+              <div className="flex gap-2.5 pt-1 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setEditingNotebook(null)}
+                  className="text-sm text-gray-500 hover:text-gray-900 font-semibold px-4 py-2"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={editLoading}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-sm font-semibold px-4.5 py-2.5 rounded-xl transition-all shadow-md shadow-indigo-100"
+                >
+                  {editLoading ? 'Guardando...' : 'Guardar Cambios'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* ─── Profile Modal ──────────────────────────────────────────────────── */}
       {showProfile && (

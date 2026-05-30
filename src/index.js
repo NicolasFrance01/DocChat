@@ -147,6 +147,29 @@ app.post('/api/notebooks', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/api/notebooks/:id', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const { name, description, ai_assistant_enabled } = req.body;
+    if (!name) return res.status(400).json({ error: 'El nombre es requerido' });
+
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos para modificar este notebook' });
+    }
+
+    const updated = await db.updateNotebook(notebookId, name, description, !!ai_assistant_enabled);
+    await db.logActivity(req.user.id, req.user.username, 'update_notebook', notebookId, updated.name, null, null, `Notebook "${updated.name}" modificado`);
+
+    res.json({ notebook: updated });
+  } catch (err) {
+    console.error('[notebooks:update]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 app.delete('/api/notebooks/:id', requireAuth, async (req, res) => {
   try {
     const notebookId = Number(req.params.id);
