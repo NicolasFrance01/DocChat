@@ -122,13 +122,15 @@ async function chat({ notebookId, userMessage, history = [], documentIds = null 
   });
 
   const answer = completion.choices[0].message.content.trim();
-  const sources = relevantChunks.map(c => ({
+  const sources = await Promise.all(relevantChunks.map(async (c) => ({
     chunk_id: c.id,
+    document_id: c.document_id,
     document_name: c.document_name,
     page_number: c.page_number,
     excerpt: c.content, // Return full content for premium interactive citations
+    folder_path: c.folder_id ? await db.getFolderPath(c.folder_id) : '',
     similarity: Math.round(c.similarity * 100) / 100,
-  }));
+  })));
 
   return { answer, sources };
 }
@@ -168,13 +170,15 @@ async function chatStream({ notebookId, userMessage, history = [], documentIds =
     }
   }
 
-  const sources = relevantChunks.map(c => ({
+  const sources = await Promise.all(relevantChunks.map(async (c) => ({
     chunk_id: c.id,
+    document_id: c.document_id,
     document_name: c.document_name,
     page_number: c.page_number,
     excerpt: c.content, // Return full content for premium interactive citations
+    folder_path: c.folder_id ? await db.getFolderPath(c.folder_id) : '',
     similarity: Math.round(c.similarity * 100) / 100,
-  }));
+  })));
 
   onDone(sources, fullAnswer);
 }

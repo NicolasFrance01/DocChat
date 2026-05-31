@@ -174,7 +174,12 @@ export async function getDocument(id: number) {
   return request<{ document: DocumentText }>(`/api/documents/${id}`);
 }
 
-export async function uploadDocument(notebookId: number, file: File, onProgress?: (pct: number) => void) {
+export async function uploadDocument(
+  notebookId: number,
+  file: File,
+  folderId?: number | null,
+  onProgress?: (pct: number) => void
+) {
   return new Promise<{ document: Document }>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const t = token();
@@ -195,7 +200,8 @@ export async function uploadDocument(notebookId: number, file: File, onProgress?
     const form = new FormData();
     form.append('file', file);
 
-    xhr.open('POST', `/api/ingest/${notebookId}`);
+    const url = `/api/ingest/${notebookId}${folderId ? `?folder_id=${folderId}` : ''}`;
+    xhr.open('POST', url);
     if (t) xhr.setRequestHeader('X-Session-Token', t);
     xhr.send(form);
   });
@@ -210,6 +216,45 @@ export async function ingestUrl(notebookId: number, url: string) {
 
 export async function deleteDocument(id: number) {
   return request(`/api/documents/${id}`, { method: 'DELETE' });
+}
+
+// ─── Folders ──────────────────────────────────────────────────────────────────
+
+export interface Folder {
+  id: number;
+  notebook_id: number;
+  parent_id: number | null;
+  name: string;
+  created_at: string;
+}
+
+export async function getFolders(notebookId: number) {
+  return request<{ folders: Folder[] }>(`/api/notebooks/${notebookId}/folders`);
+}
+
+export async function createFolder(notebookId: number, name: string, parentId: number | null) {
+  return request<{ folder: Folder }>(`/api/notebooks/${notebookId}/folders`, {
+    method: 'POST',
+    body: JSON.stringify({ name, parent_id: parentId }),
+  });
+}
+
+export async function deleteFolder(id: number) {
+  return request(`/api/folders/${id}`, { method: 'DELETE' });
+}
+
+export async function moveDocument(id: number, folderId: number | null) {
+  return request<{ document: Document }>(`/api/documents/${id}/move`, {
+    method: 'POST',
+    body: JSON.stringify({ folder_id: folderId }),
+  });
+}
+
+export async function moveFolder(id: number, parentId: number | null) {
+  return request<{ folder: Folder }>(`/api/folders/${id}/move`, {
+    method: 'POST',
+    body: JSON.stringify({ parent_id: parentId }),
+  });
 }
 
 // ─── Chat (SSE streaming) ─────────────────────────────────────────────────────
@@ -321,11 +366,11 @@ export interface UserAdmin { id: number; username: string; role: string; full_na
 export interface Activity { id: number; user_id: number | null; username: string; action: string; notebook_id: number | null; notebook_name: string | null; document_id: number | null; document_name: string | null; details: string | null; created_at: string; }
 export interface NotebookUser { user_id: number; role: string; username: string; full_name: string | null; }
 export interface Notebook { id: number; user_id: number; name: string; description: string | null; document_count: number; created_at: string; ai_assistant_enabled?: boolean; document_order?: number[]; }
-export interface Document { id: number; notebook_id: number; name: string; type: string; source: string | null; chunk_count: number; created_at: string; }
+export interface Document { id: number; notebook_id: number; folder_id: number | null; name: string; type: string; source: string | null; chunk_count: number; created_at: string; }
 export interface DocumentText extends Document { raw_text: string | null; }
 export interface Conversation { id: number; notebook_id: number; title: string | null; message_count: number; created_at: string; }
 export interface Message { id: number; conversation_id: number; role: 'user' | 'assistant'; content: string; sources: Source[] | null; parent_id: number | null; created_at: string; }
-export interface Source { chunk_id: number; document_name: string; page_number: number | null; excerpt: string; similarity: number; }
+export interface Source { chunk_id: number; document_id?: number; document_name: string; page_number: number | null; excerpt: string; similarity: number; folder_path?: string; }
 
 export interface DocumentProgress {
   document_id: number;

@@ -16,6 +16,20 @@ async function initDb() {
   const bcrypt = require('bcrypt');
 
   const schema = fs.readFileSync(path.join(__dirname, '..', 'schema.sql'), 'utf8');
+
+  // Pre-create tables and columns needed by index creation inside schema.sql
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS folders (
+      id          SERIAL PRIMARY KEY,
+      notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+      parent_id   INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+      name        TEXT NOT NULL,
+      created_at  TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(notebook_id, parent_id, name)
+    );
+  `).catch(() => {});
+  await pool.query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL;`).catch(() => {});
+
   await pool.query(schema);
 
   // Apply explicit migrations for existing tables to ensure backward compatibility
@@ -283,7 +297,7 @@ async function getActivityLogs() {
 
 async function getDocumentsByNotebook(notebookId) {
   const { rows } = await pool.query(
-    'SELECT id, notebook_id, name, type, source, chunk_count, created_at FROM documents WHERE notebook_id = $1 ORDER BY created_at DESC',
+    'SELECT id, notebook_id, folder_id, name, type, source, chunk_count, created_at FROM documents WHERE notebook_id = $1 ORDER BY created_at DESC',
     [notebookId]
   );
   return rows;
@@ -294,10 +308,10 @@ async function getDocumentById(id) {
   return rows[0] || null;
 }
 
-async function createDocument(notebookId, name, type, source, rawText) {
+async function createDocument(notebookId, name, type, source, rawText, folderId = null) {
   const { rows } = await pool.query(
-    'INSERT INTO documents (notebook_id, name, type, source, raw_text) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-    [notebookId, name, type, source, rawText]
+    'INSERT INTO documents (notebook_id, folder_id, name, type, source, raw_text) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+    [notebookId, folderId, name, type, source, rawText]
   );
   return rows[0];
 }
@@ -340,7 +354,7 @@ async function searchChunks(notebookId, queryEmbedding, topK = 5, documentIds = 
   const embStr = `[${queryEmbedding.join(',')}]`;
   let query = `
      SELECT dc.id, dc.document_id, dc.content, dc.chunk_index, dc.page_number,
-            d.name AS document_name,
+            d.name AS document_name, d.folder_id,
             1 - (dc.embedding <=> $1::vector) AS similarity
      FROM document_chunks dc
      JOIN documents d ON d.id = dc.document_id
@@ -424,6 +438,85 @@ async function saveMessage(conversationId, role, content, parentId = null, sourc
   return rows[0];
 }
 
+// ─── Folders ──────────────────────────────────────────────────────────────────
+
+async function getFoldersByNotebook(notebookId) {
+  const { rows } = await pool.query(
+    'SELECT id, notebook_id, parent_id, name, created_at FROM folders WHERE notebook_id = $1 ORDER BY name ASC',
+    [notebookId]
+  );
+  return rows;
+}
+
+async function getFolderById(id) {
+  const { rows } = await pool.query('SELECT * FROM folders WHERE id = $1', [id]);
+  return rows[0] || null;
+}
+
+async function createFolder(notebookId, name, parentId = null) {
+  const { rows } = await pool.query(
+    'INSERT INTO folders (notebook_id, name, parent_id) VALUES ($1, $2, $3) RETURNING *',
+    [notebookId, name, parentId]
+  );
+  return rows[0];
+}
+
+async function deleteFolder(id) {
+  const { rowCount } = await pool.query('DELETE FROM folders WHERE id = $1', [id]);
+  return rowCount > 0;
+}
+
+async function moveDocumentToFolder(docId, folderId) {
+  const { rows } = await pool.query(
+    'UPDATE documents SET folder_id = $1 WHERE id = $2 RETURNING *',
+    [folderId, docId]
+  );
+  return rows[0] || null;
+}
+
+async function moveFolderToParent(folderId, parentId) {
+  if (parentId !== null) {
+    let currentId = parentId;
+    const visited = new Set();
+    while (currentId) {
+      if (currentId === folderId) {
+        throw new Error('No se puede mover una carpeta dentro de sí misma o de sus subcarpetas');
+      }
+      if (visited.has(currentId)) break;
+      visited.add(currentId);
+      const { rows } = await pool.query('SELECT parent_id FROM folders WHERE id = $1', [currentId]);
+      if (rows.length === 0) break;
+      currentId = rows[0].parent_id;
+    }
+  }
+
+  const { rows } = await pool.query(
+    'UPDATE folders SET parent_id = $1 WHERE id = $2 RETURNING *',
+    [parentId, folderId]
+  );
+  return rows[0] || null;
+}
+
+async function getFolderPath(folderId) {
+  if (!folderId) return '';
+  const pathSegments = [];
+  let currentId = folderId;
+  const visited = new Set();
+  
+  while (currentId) {
+    if (visited.has(currentId)) break;
+    visited.add(currentId);
+    
+    const { rows } = await pool.query('SELECT name, parent_id FROM folders WHERE id = $1', [currentId]);
+    if (rows.length === 0) break;
+    
+    pathSegments.unshift(rows[0].name);
+    currentId = rows[0].parent_id;
+  }
+  
+  return pathSegments.join(' / ');
+}
+
 module.exports = {
   pool,
   initDb,
@@ -459,6 +552,14 @@ module.exports = {
   // activity logging
   logActivity,
   getActivityLogs,
+  // folders
+  getFoldersByNotebook,
+  getFolderById,
+  createFolder,
+  deleteFolder,
+  moveDocumentToFolder,
+  moveFolderToParent,
+  getFolderPath,
   // documents
   getDocumentsByNotebook,
   getDocumentById,

@@ -47,6 +47,8 @@ export async function POST(
     const token = req.headers.get('x-session-token');
     if (!token) return NextResponse.json({ error: 'Token requerido' }, { status: 401 });
 
+    const folderId = req.nextUrl.searchParams.get('folder_id');
+
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
     if (!file) return NextResponse.json({ error: 'Archivo requerido' }, { status: 400 });
@@ -90,7 +92,7 @@ export async function POST(
         'Content-Type': 'application/json',
         'X-Session-Token': token,
       },
-      body: JSON.stringify({ name: file.name, type, source: fileUrl, text }),
+      body: JSON.stringify({ name: file.name, type, source: fileUrl, text, folder_id: folderId ? Number(folderId) : null }),
     });
 
     const data = await backendRes.json();

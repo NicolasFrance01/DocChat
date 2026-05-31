@@ -7,8 +7,9 @@ import {
   searchUsers, getNotebookUsers, addNotebookUser, removeNotebookUser, createInvitation, changePassword,
   getNotebookProgress, markDocumentRead, getDocumentQuiz, submitDocumentQuiz, getFinalExam, submitFinalExam,
   reorderNotebookDocuments, suggestOptimalOrder,
+  getFolders, createFolder, deleteFolder, moveDocument, moveFolder,
   type Document, type Message, type Source, type User, type NotebookUser, type Conversation,
-  type DocumentProgress, type QuizQuestion
+  type DocumentProgress, type QuizQuestion, type Folder
 } from '@/lib/api';
 
 export default function NotebookPage() {
@@ -116,6 +117,102 @@ export default function NotebookPage() {
   const [finalExamSubmitting, setFinalExamSubmitting] = useState(false);
   const [finalExamFeedback, setFinalExamFeedback] = useState<any[] | null>(null);
   const [finalExamError, setFinalExamError] = useState('');
+
+  // Folder Navigation States
+  const [viewMode, setViewMode] = useState<'flat' | 'folders'>('flat');
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
+  const [movingDocId, setMovingDocId] = useState<number | null>(null);
+  const [movingFolderId, setMovingFolderId] = useState<number | null>(null);
+
+  async function loadFolders() {
+    try {
+      const foldersData = await getFolders(notebookId);
+      setFolders(foldersData.folders);
+    } catch (err) {
+      console.error('Error al cargar carpetas:', err);
+    }
+  }
+
+  async function handleCreateFolder() {
+    const name = prompt('Ingrese el nombre de la nueva carpeta:');
+    if (!name || !name.trim()) return;
+    try {
+      const res = await createFolder(notebookId, name.trim(), currentFolderId);
+      setFolders(prev => [...prev, res.folder]);
+    } catch (err: any) {
+      alert(err.message || 'Error al crear carpeta');
+    }
+  }
+
+  async function handleDeleteFolder(folderId: number) {
+    if (!confirm('¿Eliminar esta carpeta? Se eliminarán todas sus subcarpetas. Los documentos contenidos volverán a la raíz.')) return;
+    try {
+      await deleteFolder(folderId);
+      setFolders(prev => prev.filter(f => f.id !== folderId));
+      setDocs(prev => prev.map(d => d.folder_id === folderId ? { ...d, folder_id: null } : d));
+      if (currentFolderId === folderId) {
+        setCurrentFolderId(null);
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error al eliminar carpeta');
+    }
+  }
+
+  async function handleMoveDoc(docId: number, targetFolderId: number | null) {
+    try {
+      await moveDocument(docId, targetFolderId);
+      setDocs(prev => prev.map(d => d.id === docId ? { ...d, folder_id: targetFolderId } : d));
+      setMovingDocId(null);
+    } catch (err: any) {
+      alert(err.message || 'Error al mover documento');
+    }
+  }
+
+  async function handleMoveFolder(folderId: number, targetParentId: number | null) {
+    try {
+      await moveFolder(folderId, targetParentId);
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, parent_id: targetParentId } : f));
+      setMovingFolderId(null);
+    } catch (err: any) {
+      alert(err.message || 'Error al mover carpeta');
+    }
+  }
+
+  function getFolderPathString(folderId: number): string {
+    const segments: string[] = [];
+    let currId: number | null = folderId;
+    const visited = new Set();
+    
+    while (currId) {
+      if (visited.has(currId)) break;
+      visited.add(currId);
+      const folder = folders.find(f => f.id === currId);
+      if (!folder) break;
+      segments.unshift(folder.name);
+      currId = folder.parent_id;
+    }
+    return segments.join(' / ');
+  }
+
+  function getBreadcrumbs() {
+    if (!currentFolderId) return [{ id: null, name: 'Inicio' }];
+    const crumbs: { id: number | null; name: string }[] = [];
+    let currId: number | null = currentFolderId;
+    const visited = new Set();
+    
+    while (currId) {
+      if (visited.has(currId)) break;
+      visited.add(currId);
+      
+      const folder = folders.find(f => f.id === currId);
+      if (!folder) break;
+      crumbs.unshift({ id: folder.id, name: folder.name });
+      currId = folder.parent_id;
+    }
+    crumbs.unshift({ id: null, name: 'Inicio' });
+    return crumbs;
+  }
 
 
   useEffect(() => {
@@ -264,6 +361,7 @@ export default function NotebookPage() {
         console.error('Error al cargar progreso del LMS:', err);
       }
 
+      await loadFolders();
       setDocs(currentDocs);
       
       // Check if logged-in user is creator of this notebook
@@ -591,15 +689,22 @@ export default function NotebookPage() {
 
   // ── Upload file ──────────────────────────────────────────────────────────────
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
     setUploadProgress(0);
     try {
-      const data = await uploadDocument(notebookId, file, setUploadProgress);
-      setDocs(prev => [data.document, ...prev]);
-      
-      // Select newly uploaded file by default
-      setSelectedDocs(prev => ({ ...prev, [data.document.id]: true }));
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const onProgress = (pct: number) => {
+          const overallPct = Math.round(((i + pct / 100) / files.length) * 100);
+          setUploadProgress(overallPct);
+        };
+        const data = await uploadDocument(notebookId, file, currentFolderId, onProgress);
+        setDocs(prev => [data.document, ...prev]);
+        
+        // Select newly uploaded file by default
+        setSelectedDocs(prev => ({ ...prev, [data.document.id]: true }));
+      }
       loadDocs(); // refresh list to load fragment counts once parsed
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Error al subir');
@@ -956,7 +1061,7 @@ export default function NotebookPage() {
               <h3 className="font-bold text-xs text-gray-500 uppercase tracking-wider select-none">Cargar Recursos</h3>
 
               {/* Upload file */}
-              <input ref={fileRef} type="file" accept=".pdf,.docx,.doc,.txt,.md" className="hidden" onChange={handleFileChange} />
+              <input ref={fileRef} type="file" accept=".pdf,.docx,.doc,.txt,.md" className="hidden" onChange={handleFileChange} multiple />
               <button
                 onClick={() => fileRef.current?.click()}
                 disabled={uploadProgress !== null}
@@ -1011,6 +1116,13 @@ export default function NotebookPage() {
                   <button onClick={() => toggleAllDocs(true)}>Todos</button>
                   <span className="text-gray-300">|</span>
                   <button onClick={() => toggleAllDocs(false)}>Ninguno</button>
+                  <span className="text-gray-300">|</span>
+                  <button 
+                    onClick={() => setViewMode(prev => prev === 'folders' ? 'flat' : 'folders')}
+                    className={`hover:text-indigo-800 ${viewMode === 'folders' ? 'underline font-extrabold text-indigo-750' : ''}`}
+                  >
+                    Carpetas
+                  </button>
                 </div>
               )}
             </div>
@@ -1020,8 +1132,254 @@ export default function NotebookPage() {
                 <div className="flex justify-center py-8">
                   <div className="w-6 h-6 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin" />
                 </div>
-              ) : docs.length === 0 ? (
+              ) : docs.length === 0 && folders.length === 0 ? (
                 <p className="text-xs text-gray-400 text-center py-8 font-medium">Sin documentos todavía.</p>
+              ) : viewMode === 'folders' ? (
+                <div className="space-y-3">
+                  {/* Breadcrumbs */}
+                  <div className="flex flex-wrap items-center gap-1.5 pb-2 text-[11px] border-b border-gray-100 select-none">
+                    {getBreadcrumbs().map((crumb, index, arr) => (
+                      <div key={index} className="flex items-center gap-1">
+                        <button
+                          onClick={() => setCurrentFolderId(crumb.id)}
+                          className={`font-bold hover:text-indigo-650 transition-colors ${
+                            crumb.id === currentFolderId ? 'text-indigo-600 underline font-extrabold' : 'text-gray-500'
+                          }`}
+                        >
+                          {crumb.name}
+                        </button>
+                        {index < arr.length - 1 && <span className="text-gray-300">/</span>}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Create Folder button inside explorer */}
+                  {me?.role !== 'user' && (
+                    <button
+                      onClick={handleCreateFolder}
+                      className="w-full flex items-center justify-center gap-1.5 border border-dashed border-gray-300 hover:border-indigo-400 hover:text-indigo-650 rounded-xl py-2 text-[11px] font-bold text-gray-500 hover:text-indigo-600 transition-all shadow-sm"
+                    >
+                      📁 Nueva Carpeta
+                    </button>
+                  )}
+
+                  {/* Folder Items */}
+                  {folders.filter(f => f.parent_id === currentFolderId).map(folder => (
+                    <div
+                      key={folder.id}
+                      className="flex items-center justify-between p-2.5 rounded-2xl border border-gray-200 bg-gray-50 hover:bg-gray-100/70 hover:border-indigo-200 transition-all select-none cursor-pointer group"
+                      onDoubleClick={() => setCurrentFolderId(folder.id)}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1" onClick={() => setCurrentFolderId(folder.id)}>
+                        <span className="text-xs">📁</span>
+                        <span className="text-xs font-bold text-gray-800 truncate" title={folder.name}>
+                          {folder.name}
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Folder Move dropdown */}
+                        <div className="relative">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setMovingFolderId(movingFolderId === folder.id ? null : folder.id); }}
+                            className="text-gray-450 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
+                            title="Mover carpeta"
+                          >
+                            🔄
+                          </button>
+                          {movingFolderId === folder.id && (
+                            <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[160px] text-left">
+                              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">Mover carpeta a...</p>
+                              <div className="max-h-40 overflow-y-auto space-y-1">
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    await handleMoveFolder(folder.id, null);
+                                  }}
+                                  className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-semibold"
+                                >
+                                  📁 Raíz (Inicio)
+                                </button>
+                                {folders.filter(f => f.id !== folder.id).map(f => (
+                                  <button
+                                    key={f.id}
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      await handleMoveFolder(folder.id, f.id);
+                                    }}
+                                    className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium truncate"
+                                  >
+                                    📂 {getFolderPathString(f.id)}
+                                  </button>
+                                ))}
+                              </div>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setMovingFolderId(null); }}
+                                className="w-full mt-1.5 text-center text-[10px] font-bold hover:bg-gray-100 px-2 py-1 rounded text-gray-500"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {me?.role !== 'user' && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder.id); }}
+                            className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Document Items in current folder */}
+                  {docs.filter(d => d.folder_id === currentFolderId).map((doc, idx) => {
+                    const docIdx = documentOrder.indexOf(doc.id);
+                    const isLocked = aiAssistantEnabled && docIdx > 0 && !userProgress[documentOrder[docIdx - 1]]?.quiz_passed;
+                    const isPassed = aiAssistantEnabled && userProgress[doc.id]?.quiz_passed;
+                    const isRead = aiAssistantEnabled && userProgress[doc.id]?.read_checked;
+
+                    return (
+                      <div
+                        key={doc.id}
+                        className={`flex flex-col gap-1.5 p-3 rounded-2xl border transition-all duration-200 group select-none relative ${
+                          isLocked 
+                            ? 'bg-gray-100/40 border-gray-200/50 opacity-50 cursor-not-allowed'
+                            : selectedDocs[doc.id] 
+                              ? 'border-indigo-200 bg-indigo-50/15 shadow-sm' 
+                              : 'border-gray-200 bg-white hover:border-indigo-300'
+                        }`}
+                      >
+                        <div className="flex items-start gap-2.5">
+                          {!isLocked && (
+                            <input
+                              type="checkbox"
+                              checked={!!selectedDocs[doc.id]}
+                              onChange={() => toggleDocSelection(doc.id)}
+                              className="mt-0.5 w-3.5 h-3.5 rounded text-indigo-600 border-gray-300 focus:ring-indigo-500 cursor-pointer"
+                            />
+                          )}
+                          {isLocked && (
+                            <span className="mt-0.5 text-xs text-gray-400 select-none">🔒</span>
+                          )}
+                          
+                          <div 
+                            className={`flex-1 min-w-0 ${isLocked ? 'pointer-events-none' : 'cursor-pointer'}`}
+                            onClick={() => handleOpenDocumentViewer(doc)}
+                          >
+                            <p className={`text-xs font-bold truncate transition-colors ${isLocked ? 'text-gray-400' : 'text-gray-800 group-hover:text-indigo-600'}`} title={doc.name}>
+                              {typeIcon[doc.type] ?? '📄'} {doc.name}
+                            </p>
+                            <p className="text-[10px] text-gray-400 font-semibold mt-0.5">
+                              {doc.chunk_count > 0 ? `${doc.chunk_count} fragmentos` : 'Procesando embeddings…'}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            {doc.source && doc.source.startsWith('http') && !isLocked && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); window.open(doc.source || '', '_blank'); }}
+                                className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
+                                title="Abrir archivo original en nueva pestaña"
+                              >
+                                🌐
+                              </button>
+                            )}
+                            {!isLocked && (
+                              <div className="relative">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setMovingDocId(movingDocId === doc.id ? null : doc.id); }}
+                                  className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
+                                  title="Mover documento"
+                                >
+                                  🔄
+                                </button>
+                                {movingDocId === doc.id && (
+                                  <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[160px] text-left">
+                                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">Mover a...</p>
+                                    <div className="max-h-40 overflow-y-auto space-y-1">
+                                      <button
+                                        onClick={async (e) => {
+                                          e.stopPropagation();
+                                          await handleMoveDoc(doc.id, null);
+                                        }}
+                                        className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-semibold"
+                                      >
+                                        📁 Raíz (Inicio)
+                                      </button>
+                                      {folders.map(f => (
+                                        <button
+                                          key={f.id}
+                                          onClick={async (e) => {
+                                            e.stopPropagation();
+                                            await handleMoveDoc(doc.id, f.id);
+                                          }}
+                                          className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium truncate"
+                                        >
+                                          📂 {getFolderPathString(f.id)}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setMovingDocId(null); }}
+                                      className="w-full mt-1.5 text-center text-[10px] font-bold hover:bg-gray-100 px-2 py-1 rounded text-gray-500"
+                                    >
+                                      Cancelar
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {me?.role !== 'user' && !isLocked && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
+                                className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* LMS Badges */}
+                        {aiAssistantEnabled && (
+                          <div className="mt-1.5 flex items-center justify-between border-t border-gray-100 pt-2 text-[10px] select-none font-bold uppercase tracking-wider">
+                            {isLocked ? (
+                              <span className="text-gray-400">🔒 Bloqueado</span>
+                            ) : isPassed ? (
+                              <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded-lg flex items-center gap-1">✅ Aprobado</span>
+                            ) : isRead ? (
+                              <div className="w-full flex items-center justify-between gap-1">
+                                <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded-lg">📖 Leído</span>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleLaunchQuiz(doc.id); }}
+                                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold px-2.5 py-1 rounded-lg text-[9px] tracking-normal normal-case transition-all shadow-sm"
+                                >
+                                  📝 Hacer Cuestionario
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg">📖 Pendiente de lectura</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {folders.filter(f => f.parent_id === currentFolderId).length === 0 &&
+                   docs.filter(d => d.folder_id === currentFolderId).length === 0 && (
+                     <p className="text-xs text-gray-400 text-center py-8 font-medium">Esta carpeta está vacía.</p>
+                   )}
+                </div>
               ) : (
                 docs.map((doc, idx) => {
                   const docIdx = documentOrder.indexOf(doc.id);
@@ -1032,7 +1390,7 @@ export default function NotebookPage() {
                   return (
                     <div
                       key={doc.id}
-                      className={`flex flex-col gap-1.5 p-3 rounded-2xl border transition-all duration-200 group select-none ${
+                      className={`flex flex-col gap-1.5 p-3 rounded-2xl border transition-all duration-200 group select-none relative ${
                         isLocked 
                           ? 'bg-gray-100/40 border-gray-200/50 opacity-50 cursor-not-allowed'
                           : selectedDocs[doc.id] 
@@ -1065,16 +1423,73 @@ export default function NotebookPage() {
                           </p>
                         </div>
 
-                        {me?.role !== 'user' && !isLocked && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
-                            className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
-                        )}
+                        <div className="flex items-center gap-1 shrink-0">
+                          {doc.source && doc.source.startsWith('http') && !isLocked && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); window.open(doc.source || '', '_blank'); }}
+                              className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
+                              title="Abrir archivo original en nueva pestaña"
+                            >
+                              🌐
+                            </button>
+                          )}
+                          {!isLocked && (
+                            <div className="relative">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setMovingDocId(movingDocId === doc.id ? null : doc.id); }}
+                                className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
+                                title="Mover documento"
+                              >
+                                🔄
+                              </button>
+                              {movingDocId === doc.id && (
+                                <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[160px] text-left">
+                                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">Mover a...</p>
+                                  <div className="max-h-40 overflow-y-auto space-y-1">
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        await handleMoveDoc(doc.id, null);
+                                      }}
+                                      className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-semibold"
+                                    >
+                                      📁 Raíz (Inicio)
+                                    </button>
+                                    {folders.map(f => (
+                                      <button
+                                        key={f.id}
+                                        onClick={async (e) => {
+                                          e.stopPropagation();
+                                          await handleMoveDoc(doc.id, f.id);
+                                        }}
+                                        className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium truncate"
+                                      >
+                                        📂 {getFolderPathString(f.id)}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setMovingDocId(null); }}
+                                    className="w-full mt-1.5 text-center text-[10px] font-bold hover:bg-gray-100 px-2 py-1 rounded text-gray-500"
+                                  >
+                                    Cancelar
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {me?.role !== 'user' && !isLocked && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
+                              className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
                       </div>
 
                       {/* LMS Badges & Interactive Buttons inside the card */}
@@ -1132,8 +1547,8 @@ export default function NotebookPage() {
                 }
               })()}
             </div>
-            </div>
-          </aside>
+          </div>
+        </aside>
 
         {/* ── Center: Chat Dialogue ─────────────────────────────────────────── */}
         <main className="flex-1 flex flex-col overflow-hidden bg-white z-0">
@@ -1301,7 +1716,7 @@ export default function NotebookPage() {
                                 onClick={() => handleCitationClick(s)}
                                 className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-bold transition-colors text-left bg-indigo-50/20 hover:bg-indigo-50/60 border border-indigo-100/40 rounded-lg px-2 py-1"
                               >
-                                📎 {s.document_name}
+                                📎 {s.folder_path ? `${s.folder_path} / ` : ''}{s.document_name}
                                 {s.page_number ? ` · pág. ${s.page_number}` : ''} 
                                 <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider ml-1">({Math.round(s.similarity * 100)}%)</span>
                               </button>

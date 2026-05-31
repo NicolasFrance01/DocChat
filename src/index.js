@@ -254,6 +254,142 @@ async function hasCreatorPermission(notebook, user) {
   return userAcl && userAcl.role === 'creator';
 }
 
+// ─── Folders ──────────────────────────────────────────────────────────────────
+
+// GET all folders of a notebook
+app.get('/api/notebooks/:id/folders', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    const folders = await db.getFoldersByNotebook(notebookId);
+    res.json({ folders });
+  } catch (err) {
+    console.error('[folders:list]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// POST create folder
+app.post('/api/notebooks/:id/folders', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const { name, parent_id } = req.body;
+    if (!name) return res.status(400).json({ error: 'El nombre es requerido' });
+
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    const folder = await db.createFolder(notebookId, name, parent_id ? Number(parent_id) : null);
+    await db.logActivity(req.user.id, req.user.username, 'create_folder', notebookId, notebook.name, null, null, `Carpeta "${name}" creada`);
+
+    res.status(201).json({ folder });
+  } catch (err) {
+    console.error('[folders:create]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// DELETE folder
+app.delete('/api/folders/:id', requireAuth, async (req, res) => {
+  try {
+    const folderId = Number(req.params.id);
+    const folder = await db.getFolderById(folderId);
+    if (!folder) return res.status(404).json({ error: 'Carpeta no encontrada' });
+
+    const notebook = await db.getNotebookById(folder.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    await db.deleteFolder(folderId);
+    await db.logActivity(req.user.id, req.user.username, 'delete_folder', notebook.id, notebook.name, null, null, `Carpeta "${folder.name}" eliminada`);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[folders:delete]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// POST move document
+app.post('/api/documents/:id/move', requireAuth, async (req, res) => {
+  try {
+    const docId = Number(req.params.id);
+    const { folder_id } = req.body;
+
+    const doc = await db.getDocumentById(docId);
+    if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
+
+    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    // Verify folder belongs to the same notebook
+    let targetFolderId = folder_id ? Number(folder_id) : null;
+    if (targetFolderId) {
+      const folder = await db.getFolderById(targetFolderId);
+      if (!folder || folder.notebook_id !== notebook.id) {
+        return res.status(400).json({ error: 'Carpeta de destino inválida o pertenece a otro notebook' });
+      }
+    }
+
+    const updated = await db.moveDocumentToFolder(docId, targetFolderId);
+    const pathStr = targetFolderId ? await db.getFolderPath(targetFolderId) : 'raíz';
+    await db.logActivity(req.user.id, req.user.username, 'move_document', notebook.id, notebook.name, doc.id, doc.name, `Documento "${doc.name}" movido a ${pathStr}`);
+
+    res.json({ document: updated });
+  } catch (err) {
+    console.error('[documents:move]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// POST move folder
+app.post('/api/folders/:id/move', requireAuth, async (req, res) => {
+  try {
+    const folderId = Number(req.params.id);
+    const { parent_id } = req.body;
+
+    const folder = await db.getFolderById(folderId);
+    if (!folder) return res.status(404).json({ error: 'Carpeta no encontrada' });
+
+    const notebook = await db.getNotebookById(folder.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    let targetParentId = parent_id ? Number(parent_id) : null;
+    if (targetParentId) {
+      const parentFolder = await db.getFolderById(targetParentId);
+      if (!parentFolder || parentFolder.notebook_id !== notebook.id) {
+        return res.status(400).json({ error: 'Carpeta padre de destino inválida o pertenece a otro notebook' });
+      }
+    }
+
+    const updated = await db.moveFolderToParent(folderId, targetParentId);
+    const pathStr = targetParentId ? await db.getFolderPath(targetParentId) : 'raíz';
+    await db.logActivity(req.user.id, req.user.username, 'move_folder', notebook.id, notebook.name, null, null, `Carpeta "${folder.name}" movida a ${pathStr}`);
+
+    res.json({ folder: updated });
+  } catch (err) {
+    console.error('[folders:move]', err);
+    res.status(500).json({ error: err.message || 'Error interno' });
+  }
+});
+
 // ─── Documents ────────────────────────────────────────────────────────────────
 
 app.get('/api/notebooks/:id/documents', requireAuth, async (req, res) => {
@@ -306,7 +442,8 @@ app.post('/api/notebooks/:id/documents', requireAuth, upload.single('file'), asy
     if (chunks.length === 0) return res.status(422).json({ error: 'No se pudo extraer texto del archivo' });
 
     // Save document record
-    const doc = await db.createDocument(notebook.id, req.file.originalname, type, req.file.originalname, rawText);
+    const folder_id = req.body.folder_id || req.query.folder_id;
+    const doc = await db.createDocument(notebook.id, req.file.originalname, type, req.file.originalname, rawText, folder_id ? Number(folder_id) : null);
     await db.logActivity(req.user.id, req.user.username, 'upload_document', notebook.id, notebook.name, doc.id, doc.name, `Archivo "${req.file.originalname}" subido`);
 
     // Generate embeddings and store chunks (async, respond 202 immediately to avoid timeout)
@@ -339,7 +476,8 @@ app.post('/api/notebooks/:id/documents/url', requireAuth, async (req, res) => {
     if (chunks.length === 0) return res.status(422).json({ error: 'No se pudo extraer texto de la URL' });
 
     const name = title || url;
-    const doc = await db.createDocument(notebook.id, name, 'url', url, rawText);
+    const folder_id = req.body.folder_id || req.query.folder_id;
+    const doc = await db.createDocument(notebook.id, name, 'url', url, rawText, folder_id ? Number(folder_id) : null);
     await db.logActivity(req.user.id, req.user.username, 'upload_document', notebook.id, notebook.name, doc.id, doc.name, `Documento URL "${name}" ingestado`);
 
     res.status(202).json({ document: doc, message: 'Procesando embeddings en segundo plano…' });
@@ -360,11 +498,11 @@ app.post('/api/notebooks/:id/documents/text', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
     }
 
-    const { name, type, source, text } = req.body;
+    const { name, type, source, text, folder_id } = req.body;
     if (!name || !type || !text) return res.status(400).json({ error: 'Faltan campos: name, type, text' });
     if (text.trim().length === 0) return res.status(422).json({ error: 'El documento no contiene texto extraíble' });
 
-    const doc = await db.createDocument(notebook.id, name, type, source || name, text);
+    const doc = await db.createDocument(notebook.id, name, type, source || name, text, folder_id ? Number(folder_id) : null);
     await db.logActivity(req.user.id, req.user.username, 'upload_document', notebook.id, notebook.name, doc.id, doc.name, `Archivo "${name}" creado vía proxy`);
 
     // Actualizar orden de documentos del notebook

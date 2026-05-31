@@ -70,10 +70,21 @@ CREATE TABLE IF NOT EXISTS activity_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ─── Carpetas del Notebook ───────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS folders (
+  id          SERIAL PRIMARY KEY,
+  notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+  parent_id   INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(notebook_id, parent_id, name)
+);
+
 -- ─── Documents ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS documents (
   id          SERIAL PRIMARY KEY,
   notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+  folder_id   INTEGER REFERENCES folders(id) ON DELETE SET NULL,
   name        TEXT NOT NULL,
   type        TEXT NOT NULL,          -- 'pdf' | 'docx' | 'url' | 'txt'
   source      TEXT,                   -- original URL or filename
@@ -83,6 +94,7 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 CREATE INDEX IF NOT EXISTS documents_notebook_id_idx ON documents(notebook_id);
+CREATE INDEX IF NOT EXISTS documents_folder_id_idx ON documents(folder_id);
 
 -- ─── Document chunks (pgvector) ───────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS document_chunks (
