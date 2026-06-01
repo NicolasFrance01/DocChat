@@ -1496,18 +1496,21 @@ export default function NotebookPage() {
                                         >
                                           <span>📖</span> Solo lectura
                                         </button>
-                                        {doc.source && doc.source.startsWith('http') && (
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setMenuDocId(null);
-                                              window.open(doc.source || '', '_blank');
-                                            }}
-                                            className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium flex items-center gap-2"
-                                          >
-                                            <span>🌐</span> Ver formato original
-                                          </button>
-                                        )}
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setMenuDocId(null);
+                                            if (doc.source && doc.source.startsWith('http')) {
+                                              window.open(doc.source, '_blank');
+                                            } else {
+                                              alert('El archivo en formato original no se encuentra disponible en la nube para este documento.');
+                                            }
+                                          }}
+                                          className={`w-full text-left text-xs px-2 py-1.5 rounded-lg font-medium flex items-center gap-2 ${doc.source && doc.source.startsWith('http') ? 'hover:bg-indigo-50 text-gray-700' : 'text-gray-400 opacity-70 cursor-not-allowed'}`}
+                                          title={!(doc.source && doc.source.startsWith('http')) ? 'Archivo original no disponible' : ''}
+                                        >
+                                          <span>🌐</span> Ver formato original
+                                        </button>
                                       </div>
                                     </div>
                                   )}
