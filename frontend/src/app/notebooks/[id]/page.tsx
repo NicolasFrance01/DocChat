@@ -1151,6 +1151,17 @@ export default function NotebookPage() {
                       <div key={index} className="flex items-center gap-1">
                         <button
                           onClick={() => setCurrentFolderId(crumb.id)}
+                          onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('underline', 'text-indigo-600', 'scale-105'); }}
+                          onDragLeave={(e) => { e.currentTarget.classList.remove('underline', 'text-indigo-600', 'scale-105'); }}
+                          onDrop={async (e) => {
+                            e.preventDefault();
+                            e.currentTarget.classList.remove('underline', 'text-indigo-600', 'scale-105');
+                            try {
+                              const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+                              if (data.type === 'document') await handleMoveDoc(data.id, crumb.id);
+                              else if (data.type === 'folder' && data.id !== crumb.id) await handleMoveFolder(data.id, crumb.id);
+                            } catch {}
+                          }}
                           className={`font-bold hover:text-indigo-650 transition-colors ${
                             crumb.id === currentFolderId ? 'text-indigo-600 underline font-extrabold' : 'text-gray-500'
                           }`}
@@ -1176,6 +1187,27 @@ export default function NotebookPage() {
                   {folders.filter(f => f.parent_id === currentFolderId).map(folder => (
                     <div
                       key={folder.id}
+                      draggable={true}
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'folder', id: folder.id }));
+                        e.dataTransfer.effectAllowed = 'move';
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.currentTarget.classList.add('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
+                      }}
+                      onDragLeave={(e) => {
+                        e.currentTarget.classList.remove('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
+                      }}
+                      onDrop={async (e) => {
+                        e.preventDefault();
+                        e.currentTarget.classList.remove('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
+                        try {
+                          const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+                          if (data.type === 'document') await handleMoveDoc(data.id, folder.id);
+                          else if (data.type === 'folder' && data.id !== folder.id) await handleMoveFolder(data.id, folder.id);
+                        } catch {}
+                      }}
                       className="flex items-center justify-between p-2.5 rounded-2xl border border-gray-200 bg-gray-50 hover:bg-gray-100/70 hover:border-indigo-200 transition-all select-none cursor-pointer group"
                       onDoubleClick={() => setCurrentFolderId(folder.id)}
                     >
@@ -1256,12 +1288,17 @@ export default function NotebookPage() {
                     return (
                       <div
                         key={doc.id}
+                        draggable={!isLocked}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'document', id: doc.id }));
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
                         className={`flex flex-col gap-1.5 p-3 rounded-2xl border transition-all duration-200 group select-none relative ${
                           isLocked 
                             ? 'bg-gray-100/40 border-gray-200/50 opacity-50 cursor-not-allowed'
                             : selectedDocs[doc.id] 
                               ? 'border-indigo-200 bg-indigo-50/15 shadow-sm' 
-                              : 'border-gray-200 bg-white hover:border-indigo-300'
+                              : 'border-gray-200 bg-white hover:border-indigo-300 hover:shadow-sm'
                         }`}
                       >
                         <div className="flex items-start gap-2.5">
@@ -2552,6 +2589,55 @@ export default function NotebookPage() {
                 </div>
               )}
 
+              {/* Folders Drop Zone in Modal */}
+              <div className="space-y-2 select-none">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Carpetas (Arrastra para mover)</span>
+                  {me?.role !== 'user' && (
+                    <button
+                      onClick={() => setShowFolderModal(true)}
+                      className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+                    >
+                      📁 Nueva Carpeta
+                    </button>
+                  )}
+                </div>
+                {folders.length === 0 ? (
+                  <p className="text-[10px] text-gray-400 italic">No hay carpetas creadas. Crea una para organizar tus documentos.</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2 mb-4">
+                    {folders.map(folder => (
+                      <div
+                        key={folder.id}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.currentTarget.classList.add('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
+                        }}
+                        onDragLeave={(e) => {
+                          e.currentTarget.classList.remove('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
+                        }}
+                        onDrop={async (e) => {
+                          e.preventDefault();
+                          e.currentTarget.classList.remove('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
+                          try {
+                            const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+                            if (data.type === 'document') await handleMoveDoc(data.id, folder.id);
+                            else if (data.type === 'folder' && data.id !== folder.id) await handleMoveFolder(data.id, folder.id);
+                          } catch {}
+                        }}
+                        className="flex items-center gap-2 p-2.5 rounded-xl border border-gray-200 bg-gray-50 hover:bg-gray-100 transition-all cursor-pointer"
+                        title={getFolderPathString(folder.id)}
+                      >
+                        <span className="text-xs">📁</span>
+                        <span className="text-xs font-bold text-gray-800 truncate">
+                          {folder.name}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {tempOrder.length === 0 ? (
                 <p className="text-xs text-gray-405 text-gray-450 text-center py-8">Carga documentos en el notebook para poder ordenarlos.</p>
               ) : (
@@ -2559,19 +2645,30 @@ export default function NotebookPage() {
                   {tempOrder.map((docId, index) => {
                     const docItem = docs.find(d => d.id === docId);
                     if (!docItem) return null;
+                    const folderStr = docItem.folder_id ? getFolderPathString(docItem.folder_id) : 'Raíz';
 
                     return (
                       <div
                         key={docId}
-                        className="flex items-center justify-between bg-gray-50/50 border border-gray-150 rounded-2xl p-3.5 shadow-sm hover:border-indigo-200 transition-colors"
+                        draggable={true}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'document', id: docId }));
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
+                        className="flex items-center justify-between bg-gray-50/50 border border-gray-150 rounded-2xl p-3.5 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all cursor-grab active:cursor-grabbing"
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
                           <div className="w-6 h-6 bg-indigo-50 text-indigo-700 font-extrabold text-[11px] rounded-lg flex items-center justify-center shrink-0">
                             {index + 1}
                           </div>
-                          <span className="text-xs font-bold text-gray-800 truncate" title={docItem.name}>
-                            {docItem.name}
-                          </span>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-xs font-bold text-gray-800 truncate" title={docItem.name}>
+                              {docItem.name}
+                            </span>
+                            <span className="text-[10px] text-gray-400 font-semibold truncate" title={`Ubicación: ${folderStr}`}>
+                              📍 {folderStr}
+                            </span>
+                          </div>
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
