@@ -127,6 +127,7 @@ export default function NotebookPage() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
   const [movingDocId, setMovingDocId] = useState<number | null>(null);
+  const [menuDocId, setMenuDocId] = useState<number | null>(null);
   const [movingFolderId, setMovingFolderId] = useState<number | null>(null);
 
   // Create Folder Modal State
@@ -1425,19 +1426,10 @@ export default function NotebookPage() {
                             </div>
 
                             <div className="flex items-center gap-1 shrink-0">
-                              {doc.source && doc.source.startsWith('http') && !isLocked && (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); window.open(doc.source || '', '_blank'); }}
-                                  className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
-                                  title="Abrir archivo original en nueva pestaña"
-                                >
-                                  🌐
-                                </button>
-                              )}
                               {!isLocked && (
                                 <div className="relative">
                                   <button
-                                    onClick={(e) => { e.stopPropagation(); setMovingDocId(movingDocId === doc.id ? null : doc.id); }}
+                                    onClick={(e) => { e.stopPropagation(); setMovingDocId(movingDocId === doc.id ? null : doc.id); setMenuDocId(null); }}
                                     className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
                                     title="Mover documento"
                                   >
@@ -1480,10 +1472,53 @@ export default function NotebookPage() {
                                 </div>
                               )}
 
+                              {!isLocked && (
+                                <div className="relative">
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setMenuDocId(menuDocId === doc.id ? null : doc.id); setMovingDocId(null); }}
+                                    className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
+                                    title="Opciones"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                                    </svg>
+                                  </button>
+                                  {menuDocId === doc.id && (
+                                    <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[180px] text-left">
+                                      <div className="space-y-1">
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setMenuDocId(null);
+                                            handleOpenDocumentViewer(doc);
+                                          }}
+                                          className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium flex items-center gap-2"
+                                        >
+                                          <span>📖</span> Solo lectura
+                                        </button>
+                                        {doc.source && doc.source.startsWith('http') && (
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setMenuDocId(null);
+                                              window.open(doc.source || '', '_blank');
+                                            }}
+                                            className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium flex items-center gap-2"
+                                          >
+                                            <span>🌐</span> Ver formato original
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
                               {me?.role !== 'user' && !isLocked && (
                                 <button
                                   onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
                                   className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
+                                  title="Eliminar documento"
                                 >
                                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
