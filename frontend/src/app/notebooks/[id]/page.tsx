@@ -125,6 +125,11 @@ export default function NotebookPage() {
   const [movingDocId, setMovingDocId] = useState<number | null>(null);
   const [movingFolderId, setMovingFolderId] = useState<number | null>(null);
 
+  // Create Folder Modal State
+  const [showFolderModal, setShowFolderModal] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
+
   async function loadFolders() {
     try {
       const foldersData = await getFolders(notebookId);
@@ -135,13 +140,17 @@ export default function NotebookPage() {
   }
 
   async function handleCreateFolder() {
-    const name = prompt('Ingrese el nombre de la nueva carpeta:');
-    if (!name || !name.trim()) return;
+    if (!newFolderName.trim()) return;
+    setCreatingFolder(true);
     try {
-      const res = await createFolder(notebookId, name.trim(), currentFolderId);
+      const res = await createFolder(notebookId, newFolderName.trim(), currentFolderId);
       setFolders(prev => [...prev, res.folder]);
+      setShowFolderModal(false);
+      setNewFolderName('');
     } catch (err: any) {
       alert(err.message || 'Error al crear carpeta');
+    } finally {
+      setCreatingFolder(false);
     }
   }
 
@@ -1156,7 +1165,7 @@ export default function NotebookPage() {
                   {/* Create Folder button inside explorer */}
                   {me?.role !== 'user' && (
                     <button
-                      onClick={handleCreateFolder}
+                      onClick={() => setShowFolderModal(true)}
                       className="w-full flex items-center justify-center gap-1.5 border border-dashed border-gray-300 hover:border-indigo-400 hover:text-indigo-650 rounded-xl py-2 text-[11px] font-bold text-gray-500 hover:text-indigo-600 transition-all shadow-sm"
                     >
                       📁 Nueva Carpeta
@@ -2614,6 +2623,60 @@ export default function NotebookPage() {
           </div>
         </div>
       )}
+      {/* ─── CREATE FOLDER MODAL ──────────────────────────────────────────────── */}
+      {showFolderModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl w-full max-w-sm flex flex-col shadow-2xl border border-gray-100 overflow-hidden animate-slide-up">
+            
+            {/* Modal Header */}
+            <div className="px-6 py-4.5 border-b border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">📁</span>
+                <h3 className="font-bold text-gray-900 text-lg">Nueva Carpeta</h3>
+              </div>
+              <button onClick={() => { setShowFolderModal(false); setNewFolderName(''); }} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-gray-700">Nombre de la Carpeta</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={newFolderName}
+                  onChange={e => setNewFolderName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleCreateFolder(); }}
+                  placeholder="Ej. Finanzas, Contabilidad..."
+                  className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all placeholder:text-gray-400 font-medium"
+                />
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
+              <button
+                onClick={() => { setShowFolderModal(false); setNewFolderName(''); }}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-100 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleCreateFolder}
+                disabled={creatingFolder || !newFolderName.trim()}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors shadow-md shadow-indigo-100 disabled:opacity-50"
+              >
+                {creatingFolder ? 'Creando...' : 'Crear Carpeta'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
