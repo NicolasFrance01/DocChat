@@ -1229,13 +1229,6 @@ export default function NotebookPage() {
                   <button onClick={() => toggleAllDocs(true)}>Todos</button>
                   <span className="text-gray-300">|</span>
                   <button onClick={() => toggleAllDocs(false)}>Ninguno</button>
-                  <span className="text-gray-300">|</span>
-                  <button 
-                    onClick={() => setViewMode(prev => prev === 'folders' ? 'flat' : 'folders')}
-                    className={`hover:text-indigo-800 ${viewMode === 'folders' ? 'underline font-extrabold text-indigo-750' : ''}`}
-                  >
-                    Carpetas
-                  </button>
                 </div>
               )}
             </div>
@@ -1247,7 +1240,7 @@ export default function NotebookPage() {
                 </div>
               ) : docs.length === 0 && folders.length === 0 ? (
                 <p className="text-xs text-gray-400 text-center py-8 font-medium">Sin documentos todavía.</p>
-              ) : viewMode === 'folders' ? (
+              ) : (
                 <div className="space-y-3">
                   {/* Breadcrumbs */}
                   <div className="flex flex-wrap items-center gap-1.5 pb-2 text-[11px] border-b border-gray-100 select-none">
@@ -1529,143 +1522,7 @@ export default function NotebookPage() {
                      <p className="text-xs text-gray-400 text-center py-8 font-medium">Esta carpeta está vacía.</p>
                    )}
                 </div>
-              ) : (
-                docs.map((doc, idx) => {
-                  const docIdx = documentOrder.indexOf(doc.id);
-                  const isLocked = aiAssistantEnabled && docIdx > 0 && !userProgress[documentOrder[docIdx - 1]]?.quiz_passed;
-                  const isPassed = aiAssistantEnabled && userProgress[doc.id]?.quiz_passed;
-                  const isRead = aiAssistantEnabled && userProgress[doc.id]?.read_checked;
 
-                  return (
-                    <div
-                      key={doc.id}
-                      className={`flex flex-col gap-1.5 p-3 rounded-2xl border transition-all duration-200 group select-none relative ${
-                        isLocked 
-                          ? 'bg-gray-100/40 border-gray-200/50 opacity-50 cursor-not-allowed'
-                          : selectedDocs[doc.id] 
-                            ? 'border-indigo-200 bg-indigo-50/15 shadow-sm' 
-                            : 'border-gray-200 bg-white hover:border-indigo-300'
-                      }`}
-                    >
-                      <div className="flex items-start gap-2.5">
-                        {!isLocked && (
-                          <input
-                            type="checkbox"
-                            checked={!!selectedDocs[doc.id]}
-                            onChange={() => toggleDocSelection(doc.id)}
-                            className="mt-0.5 w-3.5 h-3.5 rounded text-indigo-600 border-gray-300 focus:ring-indigo-500 cursor-pointer"
-                          />
-                        )}
-                        {isLocked && (
-                          <span className="mt-0.5 text-xs text-gray-400 select-none">🔒</span>
-                        )}
-                        
-                        <div 
-                          className={`flex-1 min-w-0 ${isLocked ? 'pointer-events-none' : 'cursor-pointer'}`}
-                          onClick={() => handleOpenDocumentViewer(doc)}
-                        >
-                          <p className={`text-xs font-bold truncate transition-colors ${isLocked ? 'text-gray-400' : 'text-gray-800 group-hover:text-indigo-600'}`} title={doc.name}>
-                            {typeIcon[doc.type] ?? '📄'} {doc.name}
-                          </p>
-                          <p className="text-[10px] text-gray-400 font-semibold mt-0.5">
-                            {doc.chunk_count > 0 ? `${doc.chunk_count} fragmentos` : 'Procesando embeddings…'}
-                          </p>
-                        </div>
-
-                        <div className="flex items-center gap-1 shrink-0">
-                          {doc.source && doc.source.startsWith('http') && !isLocked && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); window.open(doc.source || '', '_blank'); }}
-                              className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
-                              title="Abrir archivo original en nueva pestaña"
-                            >
-                              🌐
-                            </button>
-                          )}
-                          {!isLocked && (
-                            <div className="relative">
-                              <button
-                                onClick={(e) => { e.stopPropagation(); setMovingDocId(movingDocId === doc.id ? null : doc.id); }}
-                                className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
-                                title="Mover documento"
-                              >
-                                🔄
-                              </button>
-                              {movingDocId === doc.id && (
-                                <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[160px] text-left">
-                                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">Mover a...</p>
-                                  <div className="max-h-40 overflow-y-auto space-y-1">
-                                    <button
-                                      onClick={async (e) => {
-                                        e.stopPropagation();
-                                        await handleMoveDoc(doc.id, null);
-                                      }}
-                                      className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-semibold"
-                                    >
-                                      📁 Raíz (Inicio)
-                                    </button>
-                                    {folders.map(f => (
-                                      <button
-                                        key={f.id}
-                                        onClick={async (e) => {
-                                          e.stopPropagation();
-                                          await handleMoveDoc(doc.id, f.id);
-                                        }}
-                                        className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium truncate"
-                                      >
-                                        📂 {getFolderPathString(f.id)}
-                                      </button>
-                                    ))}
-                                  </div>
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setMovingDocId(null); }}
-                                    className="w-full mt-1.5 text-center text-[10px] font-bold hover:bg-gray-100 px-2 py-1 rounded text-gray-500"
-                                  >
-                                    Cancelar
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {me?.role !== 'user' && !isLocked && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
-                              className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
-                            >
-                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* LMS Badges & Interactive Buttons inside the card */}
-                      {aiAssistantEnabled && (
-                        <div className="mt-1.5 flex items-center justify-between border-t border-gray-100 pt-2 text-[10px] select-none font-bold uppercase tracking-wider">
-                          {isLocked ? (
-                            <span className="text-gray-400">🔒 Bloqueado</span>
-                          ) : isPassed ? (
-                            <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded-lg flex items-center gap-1">✅ Aprobado</span>
-                          ) : isRead ? (
-                            <div className="w-full flex items-center justify-between gap-1">
-                              <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded-lg">📖 Leído</span>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleLaunchQuiz(doc.id); }}
-                                className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold px-2.5 py-1 rounded-lg text-[9px] tracking-normal normal-case transition-all shadow-sm"
-                              >
-                                📝 Hacer Cuestionario
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg">📖 Pendiente de lectura</span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
               )}
 
               {/* Examen Final Integrador en Modo LMS */}
