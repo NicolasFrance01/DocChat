@@ -37,6 +37,8 @@ export default function NotebookPage() {
   const [docs, setDocs] = useState<Document[]>([]);
   const [docsLoading, setDocsLoading] = useState(true);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [modalUploadProgress, setModalUploadProgress] = useState<number | null>(null);
+  const modalFileRef = useRef<HTMLInputElement>(null);
   const [urlInput, setUrlInput] = useState('');
   const [urlLoading, setUrlLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -770,6 +772,35 @@ export default function NotebookPage() {
   }
 
   // ── Upload file ──────────────────────────────────────────────────────────────
+  async function handleModalUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setModalUploadProgress(0);
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const onProgress = (pct: number) => {
+          const overallPct = Math.round(((i + pct / 100) / files.length) * 100);
+          setModalUploadProgress(overallPct);
+        };
+        const targetFolder = modalFolderId; // save currently navigated folder in modal
+        const data = await uploadDocument(notebookId, file, targetFolder, onProgress);
+        
+        // Add to main docs list
+        setDocs(prev => [data.document, ...prev]);
+        
+        // Add to modal staged docs list
+        setStagedDocs(prev => [...prev, { ...data.document, sort_order: prev.length }]);
+      }
+      loadDocs();
+    } catch (err: any) {
+      alert(err.message || 'Error al subir');
+    } finally {
+      setModalUploadProgress(null);
+      if (modalFileRef.current) modalFileRef.current.value = '';
+    }
+  }
+
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -2632,6 +2663,40 @@ export default function NotebookPage() {
 
             {/* Body */}
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {/* Destino de Carga (Modal) */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="font-bold text-gray-500 uppercase tracking-wider">Destino de carga:</span>
+                    <span className="font-extrabold text-indigo-600 truncate">
+                      {modalFolderId === null ? 'Inicio (Raíz)' : (stagedFolders.find(f => f.id === modalFolderId)?.name || 'Carpeta')}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="file"
+                      multiple
+                      className="hidden"
+                      ref={modalFileRef}
+                      onChange={handleModalUpload}
+                    />
+                    <button
+                      type="button"
+                      disabled={modalUploadProgress !== null}
+                      onClick={() => modalFileRef.current?.click()}
+                      className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-extrabold text-[10px] px-3.5 py-2 rounded-xl transition-all shadow-sm flex items-center gap-1 disabled:opacity-50"
+                    >
+                      {modalUploadProgress !== null ? `Subiendo ${modalUploadProgress}%...` : '📤 Subir Archivos Aquí'}
+                    </button>
+                  </div>
+                </div>
+                {modalUploadProgress !== null && (
+                  <div className="w-full bg-gray-100 rounded-full h-1 mt-1 overflow-hidden">
+                    <div className="bg-indigo-600 h-1 rounded-full transition-all" style={{ width: `${modalUploadProgress}%` }} />
+                  </div>
+                )}
+              </div>
+
               {/* Breadcrumbs for Modal Navigation */}
               {modalFolderId !== null && (
                 <div className="flex items-center gap-1.5 px-1 pb-2">

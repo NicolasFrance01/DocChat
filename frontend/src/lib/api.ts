@@ -15,9 +15,15 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const mergedHeaders: Record<string, string> = { ...headers(), ...(init.headers as Record<string, string> ?? {}) };
+  
+  if (init.body && typeof init.body === 'string' && !mergedHeaders['Content-Type']) {
+    mergedHeaders['Content-Type'] = 'application/json';
+  }
+
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { ...headers(), ...(init.headers as Record<string, string> ?? {}) },
+    headers: mergedHeaders,
   });
   if (res.status === 401) {
     localStorage.removeItem('docchat_token');
