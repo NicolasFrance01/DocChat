@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS folders (
   notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
   parent_id   INTEGER REFERENCES folders(id) ON DELETE CASCADE,
   name        TEXT NOT NULL,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
   created_at  TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(notebook_id, parent_id, name)
 );
@@ -90,6 +91,7 @@ CREATE TABLE IF NOT EXISTS documents (
   source      TEXT,                   -- original URL or filename
   raw_text    TEXT,                   -- full extracted text
   chunk_count INTEGER NOT NULL DEFAULT 0,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

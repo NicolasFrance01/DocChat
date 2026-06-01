@@ -7,7 +7,7 @@ import {
   searchUsers, getNotebookUsers, addNotebookUser, removeNotebookUser, createInvitation, changePassword,
   getNotebookProgress, markDocumentRead, getDocumentQuiz, submitDocumentQuiz, getFinalExam, submitFinalExam,
   reorderNotebookDocuments, suggestOptimalOrder,
-  getFolders, createFolder, deleteFolder, moveDocument, moveFolder,
+  getFolders, createFolder, deleteFolder, moveDocument, moveFolder, reorderTree,
   type Document, type Message, type Source, type User, type NotebookUser, type Conversation,
   type DocumentProgress, type QuizQuestion, type Folder
 } from '@/lib/api';
@@ -94,7 +94,9 @@ export default function NotebookPage() {
 
   // Course Reordering States
   const [showOrderModal, setShowOrderModal] = useState(false);
-  const [tempOrder, setTempOrder] = useState<number[]>([]);
+  const [modalFolderId, setModalFolderId] = useState<number | null>(null);
+  const [stagedFolders, setStagedFolders] = useState<Folder[]>([]);
+  const [stagedDocs, setStagedDocs] = useState<Document[]>([]);
   const [suggestingOrder, setSuggestingOrder] = useState(false);
   const [suggestedExplanation, setSuggestedExplanation] = useState('');
   const [reorderLoading, setReorderLoading] = useState(false);
@@ -143,7 +145,14 @@ export default function NotebookPage() {
     if (!newFolderName.trim()) return;
     setCreatingFolder(true);
     try {
-      const res = await createFolder(notebookId, newFolderName.trim(), currentFolderId);
+      const targetFolderId = showOrderModal ? modalFolderId : currentFolderId;
+      const res = await createFolder(notebookId, newFolderName.trim(), targetFolderId);
+      
+      // If modal is open, we need to show the new folder there immediately
+      if (showOrderModal) {
+        setStagedFolders(prev => [...prev, { ...res.folder, sort_order: stagedFolders.length }]);
+      }
+      
       setFolders(prev => [...prev, res.folder]);
       setShowFolderModal(false);
       setNewFolderName('');
@@ -204,17 +213,17 @@ export default function NotebookPage() {
     return segments.join(' / ');
   }
 
-  function getBreadcrumbs() {
-    if (!currentFolderId) return [{ id: null, name: 'Inicio' }];
+  function getBreadcrumbs(folderId: number | null, folderList: Folder[]) {
+    if (!folderId) return [{ id: null, name: 'Inicio' }];
     const crumbs: { id: number | null; name: string }[] = [];
-    let currId: number | null = currentFolderId;
+    let currId: number | null = folderId;
     const visited = new Set();
     
     while (currId) {
       if (visited.has(currId)) break;
       visited.add(currId);
       
-      const folder = folders.find(f => f.id === currId);
+      const folder = folderList.find(f => f.id === currId);
       if (!folder) break;
       crumbs.unshift({ id: folder.id, name: folder.name });
       currId = folder.parent_id;
@@ -222,6 +231,18 @@ export default function NotebookPage() {
     crumbs.unshift({ id: null, name: 'Inicio' });
     return crumbs;
   }
+
+  // Combined Items for Main View
+  const mainCombinedItems = [
+    ...folders.filter(f => f.parent_id === currentFolderId).map(f => ({ ...f, itemType: 'folder' as const })),
+    ...docs.filter(d => d.folder_id === currentFolderId).map(d => ({ ...d, itemType: 'document' as const }))
+  ].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+
+  // Combined Items for Modal View
+  const modalCombinedItems = [
+    ...stagedFolders.filter(f => f.parent_id === modalFolderId).map(f => ({ ...f, itemType: 'folder' as const })),
+    ...stagedDocs.filter(d => d.folder_id === modalFolderId).map(d => ({ ...d, itemType: 'document' as const }))
+  ].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
 
   useEffect(() => {
@@ -278,23 +299,57 @@ export default function NotebookPage() {
 
   // ── Course Reordering Handlers ─────────────────────────────────────────────
   function handleOpenReorderModal() {
-    // Initialize temporary order with documentOrder or default documents list
-    if (documentOrder && documentOrder.length > 0) {
-      setTempOrder([...documentOrder]);
-    } else {
-      setTempOrder(docs.map(d => d.id));
-    }
+    setStagedFolders(JSON.parse(JSON.stringify(folders)));
+    setStagedDocs(JSON.parse(JSON.stringify(docs)));
+    setModalFolderId(null);
     setSuggestedExplanation('');
     setShowOrderModal(true);
   }
 
-  function handleMoveDocument(index: number, direction: 'up' | 'down') {
+  function handleMoveModalItem(index: number, direction: 'up' | 'down') {
     const nextIndex = direction === 'up' ? index - 1 : index + 1;
-    if (nextIndex < 0 || nextIndex >= tempOrder.length) return;
-    const updated = [...tempOrder];
-    const [removed] = updated.splice(index, 1);
-    updated.splice(nextIndex, 0, removed);
-    setTempOrder(updated);
+    if (nextIndex < 0 || nextIndex >= modalCombinedItems.length) return;
+
+    const newCombined = [...modalCombinedItems];
+    newCombined.forEach((item, i) => item.sort_order = i);
+
+    const temp = newCombined[index].sort_order;
+    newCombined[index].sort_order = newCombined[nextIndex].sort_order;
+    newCombined[nextIndex].sort_order = temp;
+
+    const updatedFolders = [...stagedFolders];
+    const updatedDocs = [...stagedDocs];
+    
+    newCombined.forEach(item => {
+      if (item.itemType === 'folder') {
+        const idx = updatedFolders.findIndex(f => f.id === item.id);
+        if (idx !== -1) updatedFolders[idx].sort_order = item.sort_order;
+      } else {
+        const idx = updatedDocs.findIndex(d => d.id === item.id);
+        if (idx !== -1) updatedDocs[idx].sort_order = item.sort_order;
+      }
+    });
+
+    setStagedFolders(updatedFolders);
+    setStagedDocs(updatedDocs);
+  }
+
+  async function handleModalDrop(dragId: number, dragType: 'document' | 'folder', targetFolderId: number | null) {
+    if (dragType === 'folder' && dragId === targetFolderId) return;
+
+    const updatedFolders = [...stagedFolders];
+    const updatedDocs = [...stagedDocs];
+
+    if (dragType === 'folder') {
+      const idx = updatedFolders.findIndex(f => f.id === dragId);
+      if (idx !== -1) updatedFolders[idx].parent_id = targetFolderId;
+    } else {
+      const idx = updatedDocs.findIndex(d => d.id === dragId);
+      if (idx !== -1) updatedDocs[idx].folder_id = targetFolderId;
+    }
+    
+    setStagedFolders(updatedFolders);
+    setStagedDocs(updatedDocs);
   }
 
   async function handleAISuggestOrder() {
@@ -302,7 +357,14 @@ export default function NotebookPage() {
     setSuggestedExplanation('');
     try {
       const data = await suggestOptimalOrder(notebookId);
-      setTempOrder(data.order);
+      const updatedDocs = [...stagedDocs];
+      data.order.forEach((docId, index) => {
+        const docIdx = updatedDocs.findIndex(d => d.id === docId);
+        if (docIdx !== -1 && updatedDocs[docIdx].folder_id === modalFolderId) {
+           updatedDocs[docIdx].sort_order = index;
+        }
+      });
+      setStagedDocs(updatedDocs);
       setSuggestedExplanation(data.explanation);
     } catch (err: any) {
       alert(err.message || 'Error al obtener sugerencias de la IA');
@@ -314,19 +376,30 @@ export default function NotebookPage() {
   async function handleSaveReorder() {
     setReorderLoading(true);
     try {
-      await reorderNotebookDocuments(notebookId, tempOrder);
-      setDocumentOrder(tempOrder);
+      const items = [
+        ...stagedFolders.map(f => ({ id: f.id, type: 'folder' as const, parentId: f.parent_id, sortOrder: f.sort_order || 0 })),
+        ...stagedDocs.map(d => ({ id: d.id, type: 'document' as const, parentId: d.folder_id, sortOrder: d.sort_order || 0 }))
+      ];
+
+      const computedOrder: number[] = [];
+      const traverse = (folderId: number | null) => {
+        const children = [
+          ...stagedFolders.filter(f => f.parent_id === folderId).map(f => ({ ...f, itemType: 'folder' })),
+          ...stagedDocs.filter(d => d.folder_id === folderId).map(d => ({ ...d, itemType: 'document' }))
+        ].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        
+        for (const child of children) {
+          if (child.itemType === 'document') computedOrder.push(child.id);
+          else traverse(child.id);
+        }
+      };
+      traverse(null);
+
+      await reorderTree(notebookId, items, computedOrder);
       
-      // Re-order docs list in state
-      const reorderedDocs = [...docs].sort((a, b) => {
-        const idxA = tempOrder.indexOf(a.id);
-        const idxB = tempOrder.indexOf(b.id);
-        if (idxA === -1 && idxB === -1) return 0;
-        if (idxA === -1) return 1;
-        if (idxB === -1) return -1;
-        return idxA - idxB;
-      });
-      setDocs(reorderedDocs);
+      setDocumentOrder(computedOrder);
+      setFolders(stagedFolders);
+      setDocs(stagedDocs);
       setShowOrderModal(false);
     } catch (err: any) {
       alert(err.message || 'Error al guardar el nuevo orden.');
@@ -1147,7 +1220,7 @@ export default function NotebookPage() {
                 <div className="space-y-3">
                   {/* Breadcrumbs */}
                   <div className="flex flex-wrap items-center gap-1.5 pb-2 text-[11px] border-b border-gray-100 select-none">
-                    {getBreadcrumbs().map((crumb, index, arr) => (
+                    {getBreadcrumbs(currentFolderId, folders).map((crumb, index, arr) => (
                       <div key={index} className="flex items-center gap-1">
                         <button
                           onClick={() => setCurrentFolderId(crumb.id)}
@@ -1183,208 +1256,92 @@ export default function NotebookPage() {
                     </button>
                   )}
 
-                  {/* Folder Items */}
-                  {folders.filter(f => f.parent_id === currentFolderId).map(folder => (
-                    <div
-                      key={folder.id}
-                      draggable={true}
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'folder', id: folder.id }));
-                        e.dataTransfer.effectAllowed = 'move';
-                      }}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        e.currentTarget.classList.add('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
-                      }}
-                      onDragLeave={(e) => {
-                        e.currentTarget.classList.remove('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
-                      }}
-                      onDrop={async (e) => {
-                        e.preventDefault();
-                        e.currentTarget.classList.remove('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
-                        try {
-                          const data = JSON.parse(e.dataTransfer.getData('text/plain'));
-                          if (data.type === 'document') await handleMoveDoc(data.id, folder.id);
-                          else if (data.type === 'folder' && data.id !== folder.id) await handleMoveFolder(data.id, folder.id);
-                        } catch {}
-                      }}
-                      className="flex items-center justify-between p-2.5 rounded-2xl border border-gray-200 bg-gray-50 hover:bg-gray-100/70 hover:border-indigo-200 transition-all select-none cursor-pointer group"
-                      onDoubleClick={() => setCurrentFolderId(folder.id)}
-                    >
-                      <div className="flex items-center gap-2 min-w-0 flex-1" onClick={() => setCurrentFolderId(folder.id)}>
-                        <span className="text-xs">📁</span>
-                        <span className="text-xs font-bold text-gray-800 truncate" title={folder.name}>
-                          {folder.name}
-                        </span>
-                      </div>
-                      
-                      <div className="flex items-center gap-1 shrink-0">
-                        {/* Folder Move dropdown */}
-                        <div className="relative">
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setMovingFolderId(movingFolderId === folder.id ? null : folder.id); }}
-                            className="text-gray-450 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
-                            title="Mover carpeta"
-                          >
-                            🔄
-                          </button>
-                          {movingFolderId === folder.id && (
-                            <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[160px] text-left">
-                              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">Mover carpeta a...</p>
-                              <div className="max-h-40 overflow-y-auto space-y-1">
-                                <button
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    await handleMoveFolder(folder.id, null);
-                                  }}
-                                  className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-semibold"
-                                >
-                                  📁 Raíz (Inicio)
-                                </button>
-                                {folders.filter(f => f.id !== folder.id).map(f => (
-                                  <button
-                                    key={f.id}
-                                    onClick={async (e) => {
-                                      e.stopPropagation();
-                                      await handleMoveFolder(folder.id, f.id);
-                                    }}
-                                    className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium truncate"
-                                  >
-                                    📂 {getFolderPathString(f.id)}
-                                  </button>
-                                ))}
-                              </div>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); setMovingFolderId(null); }}
-                                className="w-full mt-1.5 text-center text-[10px] font-bold hover:bg-gray-100 px-2 py-1 rounded text-gray-500"
-                              >
-                                Cancelar
-                              </button>
-                            </div>
-                          )}
-                        </div>
-
-                        {me?.role !== 'user' && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder.id); }}
-                            className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-
-                  {/* Document Items in current folder */}
-                  {docs.filter(d => d.folder_id === currentFolderId).map((doc, idx) => {
-                    const docIdx = documentOrder.indexOf(doc.id);
-                    const isLocked = aiAssistantEnabled && docIdx > 0 && !userProgress[documentOrder[docIdx - 1]]?.quiz_passed;
-                    const isPassed = aiAssistantEnabled && userProgress[doc.id]?.quiz_passed;
-                    const isRead = aiAssistantEnabled && userProgress[doc.id]?.read_checked;
-
-                    return (
-                      <div
-                        key={doc.id}
-                        draggable={!isLocked}
-                        onDragStart={(e) => {
-                          e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'document', id: doc.id }));
-                          e.dataTransfer.effectAllowed = 'move';
-                        }}
-                        className={`flex flex-col gap-1.5 p-3 rounded-2xl border transition-all duration-200 group select-none relative ${
-                          isLocked 
-                            ? 'bg-gray-100/40 border-gray-200/50 opacity-50 cursor-not-allowed'
-                            : selectedDocs[doc.id] 
-                              ? 'border-indigo-200 bg-indigo-50/15 shadow-sm' 
-                              : 'border-gray-200 bg-white hover:border-indigo-300 hover:shadow-sm'
-                        }`}
-                      >
-                        <div className="flex items-start gap-2.5">
-                          {!isLocked && (
-                            <input
-                              type="checkbox"
-                              checked={!!selectedDocs[doc.id]}
-                              onChange={() => toggleDocSelection(doc.id)}
-                              className="mt-0.5 w-3.5 h-3.5 rounded text-indigo-600 border-gray-300 focus:ring-indigo-500 cursor-pointer"
-                            />
-                          )}
-                          {isLocked && (
-                            <span className="mt-0.5 text-xs text-gray-400 select-none">🔒</span>
-                          )}
-                          
-                          <div 
-                            className={`flex-1 min-w-0 ${isLocked ? 'pointer-events-none' : 'cursor-pointer'}`}
-                            onClick={() => handleOpenDocumentViewer(doc)}
-                          >
-                            <p className={`text-xs font-bold truncate transition-colors ${isLocked ? 'text-gray-400' : 'text-gray-800 group-hover:text-indigo-600'}`} title={doc.name}>
-                              {typeIcon[doc.type] ?? '📄'} {doc.name}
-                            </p>
-                            <p className="text-[10px] text-gray-400 font-semibold mt-0.5">
-                              {doc.chunk_count > 0 ? `${doc.chunk_count} fragmentos` : 'Procesando embeddings…'}
-                            </p>
+                  {/* Combined Explorer Items */}
+                  {mainCombinedItems.map((item, idx) => {
+                    if (item.itemType === 'folder') {
+                      const folder = item;
+                      return (
+                        <div
+                          key={'folder-' + folder.id}
+                          draggable={true}
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'folder', id: folder.id }));
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.currentTarget.classList.add('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
+                          }}
+                          onDragLeave={(e) => {
+                            e.currentTarget.classList.remove('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
+                          }}
+                          onDrop={async (e) => {
+                            e.preventDefault();
+                            e.currentTarget.classList.remove('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
+                            try {
+                              const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+                              if (data.type === 'document') await handleMoveDoc(data.id, folder.id);
+                              else if (data.type === 'folder' && data.id !== folder.id) await handleMoveFolder(data.id, folder.id);
+                            } catch {}
+                          }}
+                          className="flex items-center justify-between p-2.5 rounded-2xl border border-gray-200 bg-gray-50 hover:bg-gray-100/70 hover:border-indigo-200 transition-all select-none cursor-pointer group"
+                          onDoubleClick={() => setCurrentFolderId(folder.id)}
+                        >
+                          <div className="flex items-center gap-2 min-w-0 flex-1" onClick={() => setCurrentFolderId(folder.id)}>
+                            <span className="text-xs">📁</span>
+                            <span className="text-xs font-bold text-gray-800 truncate" title={folder.name}>
+                              {folder.name}
+                            </span>
                           </div>
-
+                          
                           <div className="flex items-center gap-1 shrink-0">
-                            {doc.source && doc.source.startsWith('http') && !isLocked && (
+                            <div className="relative">
                               <button
-                                onClick={(e) => { e.stopPropagation(); window.open(doc.source || '', '_blank'); }}
-                                className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
-                                title="Abrir archivo original en nueva pestaña"
+                                onClick={(e) => { e.stopPropagation(); setMovingFolderId(movingFolderId === folder.id ? null : folder.id); }}
+                                className="text-gray-450 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
+                                title="Mover carpeta"
                               >
-                                🌐
+                                🔄
                               </button>
-                            )}
-                            {!isLocked && (
-                              <div className="relative">
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setMovingDocId(movingDocId === doc.id ? null : doc.id); }}
-                                  className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
-                                  title="Mover documento"
-                                >
-                                  🔄
-                                </button>
-                                {movingDocId === doc.id && (
-                                  <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[160px] text-left">
-                                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">Mover a...</p>
-                                    <div className="max-h-40 overflow-y-auto space-y-1">
+                              {movingFolderId === folder.id && (
+                                <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[160px] text-left">
+                                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">Mover carpeta a...</p>
+                                  <div className="max-h-40 overflow-y-auto space-y-1">
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        await handleMoveFolder(folder.id, null);
+                                      }}
+                                      className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-semibold"
+                                    >
+                                      📁 Raíz (Inicio)
+                                    </button>
+                                    {folders.filter(f => f.id !== folder.id).map(f => (
                                       <button
+                                        key={f.id}
                                         onClick={async (e) => {
                                           e.stopPropagation();
-                                          await handleMoveDoc(doc.id, null);
+                                          await handleMoveFolder(folder.id, f.id);
                                         }}
-                                        className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-semibold"
+                                        className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium truncate"
                                       >
-                                        📁 Raíz (Inicio)
+                                        📂 {getFolderPathString(f.id)}
                                       </button>
-                                      {folders.map(f => (
-                                        <button
-                                          key={f.id}
-                                          onClick={async (e) => {
-                                            e.stopPropagation();
-                                            await handleMoveDoc(doc.id, f.id);
-                                          }}
-                                          className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium truncate"
-                                        >
-                                          📂 {getFolderPathString(f.id)}
-                                        </button>
-                                      ))}
-                                    </div>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); setMovingDocId(null); }}
-                                      className="w-full mt-1.5 text-center text-[10px] font-bold hover:bg-gray-100 px-2 py-1 rounded text-gray-500"
-                                    >
-                                      Cancelar
-                                    </button>
+                                    ))}
                                   </div>
-                                )}
-                              </div>
-                            )}
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setMovingFolderId(null); }}
+                                    className="w-full mt-1.5 text-center text-[10px] font-bold hover:bg-gray-100 px-2 py-1 rounded text-gray-500"
+                                  >
+                                    Cancelar
+                                  </button>
+                                </div>
+                              )}
+                            </div>
 
-                            {me?.role !== 'user' && !isLocked && (
+                            {me?.role !== 'user' && (
                               <button
-                                onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
+                                onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder.id); }}
                                 className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
                               >
                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1394,34 +1351,149 @@ export default function NotebookPage() {
                             )}
                           </div>
                         </div>
+                      );
+                    } else {
+                      const doc = item as Document;
+                      const docIdx = documentOrder.indexOf(doc.id);
+                      const isLocked = aiAssistantEnabled && docIdx > 0 && !userProgress[documentOrder[docIdx - 1]]?.quiz_passed;
+                      const isPassed = aiAssistantEnabled && userProgress[doc.id]?.quiz_passed;
+                      const isRead = aiAssistantEnabled && userProgress[doc.id]?.read_checked;
 
-                        {/* LMS Badges */}
-                        {aiAssistantEnabled && (
-                          <div className="mt-1.5 flex items-center justify-between border-t border-gray-100 pt-2 text-[10px] select-none font-bold uppercase tracking-wider">
-                            {isLocked ? (
-                              <span className="text-gray-400">🔒 Bloqueado</span>
-                            ) : isPassed ? (
-                              <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded-lg flex items-center gap-1">✅ Aprobado</span>
-                            ) : isRead ? (
-                              <div className="w-full flex items-center justify-between gap-1">
-                                <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded-lg">📖 Leído</span>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); handleLaunchQuiz(doc.id); }}
-                                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold px-2.5 py-1 rounded-lg text-[9px] tracking-normal normal-case transition-all shadow-sm"
-                                >
-                                  📝 Hacer Cuestionario
-                                </button>
-                              </div>
-                            ) : (
-                              <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg">📖 Pendiente de lectura</span>
+                      return (
+                        <div
+                          key={'doc-' + doc.id}
+                          draggable={!isLocked}
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'document', id: doc.id }));
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          className={`flex flex-col gap-1.5 p-3 rounded-2xl border transition-all duration-200 group select-none relative ${
+                            isLocked 
+                              ? 'bg-gray-100/40 border-gray-200/50 opacity-50 cursor-not-allowed'
+                              : selectedDocs[doc.id] 
+                                ? 'border-indigo-200 bg-indigo-50/15 shadow-sm' 
+                                : 'border-gray-200 bg-white hover:border-indigo-300 hover:shadow-sm'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2.5">
+                            {!isLocked && (
+                              <input
+                                type="checkbox"
+                                checked={!!selectedDocs[doc.id]}
+                                onChange={() => toggleDocSelection(doc.id)}
+                                className="mt-0.5 w-3.5 h-3.5 rounded text-indigo-600 border-gray-300 focus:ring-indigo-500 cursor-pointer"
+                              />
                             )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                            {isLocked && (
+                              <span className="mt-0.5 text-xs text-gray-400 select-none">🔒</span>
+                            )}
+                            
+                            <div 
+                              className={`flex-1 min-w-0 ${isLocked ? 'pointer-events-none' : 'cursor-pointer'}`}
+                              onClick={() => handleOpenDocumentViewer(doc)}
+                            >
+                              <p className={`text-xs font-bold truncate transition-colors ${isLocked ? 'text-gray-400' : 'text-gray-800 group-hover:text-indigo-600'}`} title={doc.name}>
+                                {typeIcon[doc.type] ?? '📄'} {doc.name}
+                              </p>
+                              <p className="text-[10px] text-gray-400 font-semibold mt-0.5">
+                                {doc.chunk_count > 0 ? `${doc.chunk_count} fragmentos` : 'Procesando embeddings…'}
+                              </p>
+                            </div>
 
-                  {folders.filter(f => f.parent_id === currentFolderId).length === 0 &&
+                            <div className="flex items-center gap-1 shrink-0">
+                              {doc.source && doc.source.startsWith('http') && !isLocked && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); window.open(doc.source || '', '_blank'); }}
+                                  className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
+                                  title="Abrir archivo original en nueva pestaña"
+                                >
+                                  🌐
+                                </button>
+                              )}
+                              {!isLocked && (
+                                <div className="relative">
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setMovingDocId(movingDocId === doc.id ? null : doc.id); }}
+                                    className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
+                                    title="Mover documento"
+                                  >
+                                    🔄
+                                  </button>
+                                  {movingDocId === doc.id && (
+                                    <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[160px] text-left">
+                                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">Mover a...</p>
+                                      <div className="max-h-40 overflow-y-auto space-y-1">
+                                        <button
+                                          onClick={async (e) => {
+                                            e.stopPropagation();
+                                            await handleMoveDoc(doc.id, null);
+                                          }}
+                                          className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-semibold"
+                                        >
+                                          📁 Raíz (Inicio)
+                                        </button>
+                                        {folders.map(f => (
+                                          <button
+                                            key={f.id}
+                                            onClick={async (e) => {
+                                              e.stopPropagation();
+                                              await handleMoveDoc(doc.id, f.id);
+                                            }}
+                                            className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium truncate"
+                                          >
+                                            📂 {getFolderPathString(f.id)}
+                                          </button>
+                                        ))}
+                                      </div>
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); setMovingDocId(null); }}
+                                        className="w-full mt-1.5 text-center text-[10px] font-bold hover:bg-gray-100 px-2 py-1 rounded text-gray-500"
+                                      >
+                                        Cancelar
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {me?.role !== 'user' && !isLocked && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
+                                  className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 rounded"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {aiAssistantEnabled && (
+                            <div className="mt-1.5 flex items-center justify-between border-t border-gray-100 pt-2 text-[10px] select-none font-bold uppercase tracking-wider">
+                              {isLocked ? (
+                                <span className="text-gray-400">🔒 Bloqueado</span>
+                              ) : isPassed ? (
+                                <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded-lg flex items-center gap-1">✅ Aprobado</span>
+                              ) : isRead ? (
+                                <div className="w-full flex items-center justify-between gap-1">
+                                  <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded-lg">📖 Leído</span>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); handleLaunchQuiz(doc.id); }}
+                                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold px-2.5 py-1 rounded-lg text-[9px] tracking-normal normal-case transition-all shadow-sm"
+                                  >
+                                    📝 Hacer Cuestionario
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg">📖 Pendiente de lectura</span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+                  })}                  {folders.filter(f => f.parent_id === currentFolderId).length === 0 &&
                    docs.filter(d => d.folder_id === currentFolderId).length === 0 && (
                      <p className="text-xs text-gray-400 text-center py-8 font-medium">Esta carpeta está vacía.</p>
                    )}
@@ -2560,28 +2632,64 @@ export default function NotebookPage() {
 
             {/* Body */}
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {/* Breadcrumbs for Modal Navigation */}
+              {modalFolderId !== null && (
+                <div className="flex items-center gap-1.5 px-1 pb-2">
+                  <button
+                    onClick={() => setModalFolderId(null)}
+                    onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('underline', 'text-indigo-600', 'scale-105'); }}
+                    onDragLeave={(e) => { e.currentTarget.classList.remove('underline', 'text-indigo-600', 'scale-105'); }}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      e.currentTarget.classList.remove('underline', 'text-indigo-600', 'scale-105');
+                      try {
+                        const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+                        await handleModalDrop(data.id, data.type, null);
+                      } catch {}
+                    }}
+                    className="font-bold text-gray-500 hover:text-indigo-650 transition-colors"
+                  >
+                    Inicio
+                  </button>
+                  <span className="text-gray-300">/</span>
+                  <span className="font-extrabold text-indigo-600 underline truncate">
+                    {stagedFolders.find(f => f.id === modalFolderId)?.name || 'Carpeta'}
+                  </span>
+                </div>
+              )}
+
               <div className="flex items-center justify-between select-none">
-                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Documentos del Curso ({tempOrder.length})</span>
-                <button
-                  type="button"
-                  disabled={suggestingOrder || tempOrder.length <= 1}
-                  onClick={handleAISuggestOrder}
-                  className="bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-600 hover:to-yellow-700 disabled:opacity-50 text-white font-extrabold text-[10px] px-3.5 py-2 rounded-xl transition-all shadow-sm flex items-center gap-1 hover:shadow"
-                >
-                  {suggestingOrder ? (
-                    <>
-                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      <span>Analizando...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>🪄 Sugerir secuencia con IA</span>
-                    </>
-                  )}
-                </button>
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                  Temario ({modalCombinedItems.length} ítems)
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowFolderModal(true)}
+                    className="bg-gray-100 hover:bg-gray-200 text-gray-700 font-extrabold text-[10px] px-3.5 py-2 rounded-xl transition-all shadow-sm flex items-center gap-1"
+                  >
+                    📁 Nueva Carpeta
+                  </button>
+                  <button
+                    type="button"
+                    disabled={suggestingOrder || modalCombinedItems.length <= 1}
+                    onClick={handleAISuggestOrder}
+                    className="bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-600 hover:to-yellow-700 disabled:opacity-50 text-white font-extrabold text-[10px] px-3.5 py-2 rounded-xl transition-all shadow-sm flex items-center gap-1 hover:shadow"
+                  >
+                    {suggestingOrder ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <span>Analizando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>🪄 Sugerir secuencia con IA</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
-              {/* Explanatory text suggested by AI */}
               {suggestedExplanation && (
                 <div className="bg-amber-50/40 border border-amber-150 rounded-2xl p-4 animate-fade-in select-text">
                   <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider mb-1">Fundamentación Pedagógica de la IA:</p>
@@ -2589,85 +2697,51 @@ export default function NotebookPage() {
                 </div>
               )}
 
-              {/* Folders Drop Zone in Modal */}
-              <div className="space-y-2 select-none">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Carpetas (Arrastra para mover)</span>
-                  {me?.role !== 'user' && (
-                    <button
-                      onClick={() => setShowFolderModal(true)}
-                      className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
-                    >
-                      📁 Nueva Carpeta
-                    </button>
-                  )}
-                </div>
-                {folders.length === 0 ? (
-                  <p className="text-[10px] text-gray-400 italic">No hay carpetas creadas. Crea una para organizar tus documentos.</p>
-                ) : (
-                  <div className="grid grid-cols-2 gap-2 mb-4">
-                    {folders.map(folder => (
+              {modalCombinedItems.length === 0 ? (
+                <p className="text-xs text-gray-405 text-gray-450 text-center py-8">Carga documentos o crea carpetas para organizar el temario.</p>
+              ) : (
+                <div className="space-y-2 select-none">
+                  {modalCombinedItems.map((item, index) => {
+                    const isFolder = item.itemType === 'folder';
+                    return (
                       <div
-                        key={folder.id}
-                        onDragOver={(e) => {
+                        key={isFolder ? `f-${item.id}` : `d-${item.id}`}
+                        draggable={true}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', JSON.stringify({ type: isFolder ? 'folder' : 'document', id: item.id }));
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
+                        onDragOver={isFolder ? (e) => {
                           e.preventDefault();
                           e.currentTarget.classList.add('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
-                        }}
-                        onDragLeave={(e) => {
+                        } : undefined}
+                        onDragLeave={isFolder ? (e) => {
                           e.currentTarget.classList.remove('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
-                        }}
-                        onDrop={async (e) => {
+                        } : undefined}
+                        onDrop={isFolder ? async (e) => {
                           e.preventDefault();
                           e.currentTarget.classList.remove('border-indigo-400', 'bg-indigo-50/50', 'shadow-md');
                           try {
                             const data = JSON.parse(e.dataTransfer.getData('text/plain'));
-                            if (data.type === 'document') await handleMoveDoc(data.id, folder.id);
-                            else if (data.type === 'folder' && data.id !== folder.id) await handleMoveFolder(data.id, folder.id);
+                            await handleModalDrop(data.id, data.type, item.id);
                           } catch {}
-                        }}
-                        className="flex items-center gap-2 p-2.5 rounded-xl border border-gray-200 bg-gray-50 hover:bg-gray-100 transition-all cursor-pointer"
-                        title={getFolderPathString(folder.id)}
+                        } : undefined}
+                        onDoubleClick={isFolder ? () => setModalFolderId(item.id) : undefined}
+                        className={`flex items-center justify-between bg-gray-50/50 border border-gray-150 rounded-2xl p-3.5 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all cursor-grab active:cursor-grabbing ${isFolder ? 'border-dashed border-gray-300 bg-gray-50/80' : ''}`}
                       >
-                        <span className="text-xs">📁</span>
-                        <span className="text-xs font-bold text-gray-800 truncate">
-                          {folder.name}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {tempOrder.length === 0 ? (
-                <p className="text-xs text-gray-405 text-gray-450 text-center py-8">Carga documentos en el notebook para poder ordenarlos.</p>
-              ) : (
-                <div className="space-y-2 select-none">
-                  {tempOrder.map((docId, index) => {
-                    const docItem = docs.find(d => d.id === docId);
-                    if (!docItem) return null;
-                    const folderStr = docItem.folder_id ? getFolderPathString(docItem.folder_id) : 'Raíz';
-
-                    return (
-                      <div
-                        key={docId}
-                        draggable={true}
-                        onDragStart={(e) => {
-                          e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'document', id: docId }));
-                          e.dataTransfer.effectAllowed = 'move';
-                        }}
-                        className="flex items-center justify-between bg-gray-50/50 border border-gray-150 rounded-2xl p-3.5 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all cursor-grab active:cursor-grabbing"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="flex items-center gap-2.5 min-w-0" onClick={isFolder ? () => setModalFolderId(item.id) : undefined}>
                           <div className="w-6 h-6 bg-indigo-50 text-indigo-700 font-extrabold text-[11px] rounded-lg flex items-center justify-center shrink-0">
                             {index + 1}
                           </div>
                           <div className="flex flex-col min-w-0">
-                            <span className="text-xs font-bold text-gray-800 truncate" title={docItem.name}>
-                              {docItem.name}
+                            <span className="text-xs font-bold text-gray-800 truncate" title={item.name}>
+                              {isFolder ? '📁 ' : '📄 '} {item.name}
                             </span>
-                            <span className="text-[10px] text-gray-400 font-semibold truncate" title={`Ubicación: ${folderStr}`}>
-                              📍 {folderStr}
-                            </span>
+                            {!isFolder && (
+                              <span className="text-[10px] text-gray-400 font-semibold truncate">
+                                📍 {item.folder_id ? stagedFolders.find(f => f.id === item.folder_id)?.name || 'Carpeta' : 'Raíz'}
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -2675,7 +2749,7 @@ export default function NotebookPage() {
                           <button
                             type="button"
                             disabled={index === 0 || reorderLoading || suggestingOrder}
-                            onClick={() => handleMoveDocument(index, 'up')}
+                            onClick={() => handleMoveModalItem(index, 'up')}
                             className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-gray-400 p-1 hover:bg-white rounded transition-colors"
                             title="Subir nivel"
                           >
@@ -2683,8 +2757,8 @@ export default function NotebookPage() {
                           </button>
                           <button
                             type="button"
-                            disabled={index === tempOrder.length - 1 || reorderLoading || suggestingOrder}
-                            onClick={() => handleMoveDocument(index, 'down')}
+                            disabled={index === modalCombinedItems.length - 1 || reorderLoading || suggestingOrder}
+                            onClick={() => handleMoveModalItem(index, 'down')}
                             className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-gray-400 p-1 hover:bg-white rounded transition-colors"
                             title="Bajar nivel"
                           >
@@ -2696,9 +2770,7 @@ export default function NotebookPage() {
                   })}
                 </div>
               )}
-            </div>
-
-            {/* Footer */}
+            </div>            {/* Footer */}
             <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-2 shrink-0">
               <button
                 type="button"
@@ -2710,7 +2782,7 @@ export default function NotebookPage() {
               </button>
               <button
                 type="button"
-                disabled={reorderLoading || suggestingOrder || tempOrder.length === 0}
+                disabled={reorderLoading || suggestingOrder}
                 onClick={handleSaveReorder}
                 className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-extrabold rounded-xl px-5 py-2.5 text-xs transition-all shadow-md shadow-indigo-100"
               >

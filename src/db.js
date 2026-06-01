@@ -297,7 +297,7 @@ async function getActivityLogs() {
 
 async function getDocumentsByNotebook(notebookId) {
   const { rows } = await pool.query(
-    'SELECT id, notebook_id, folder_id, name, type, source, chunk_count, created_at FROM documents WHERE notebook_id = $1 ORDER BY created_at DESC',
+    'SELECT id, notebook_id, folder_id, name, type, source, chunk_count, sort_order, created_at FROM documents WHERE notebook_id = $1 ORDER BY sort_order ASC, created_at DESC',
     [notebookId]
   );
   return rows;
@@ -442,7 +442,7 @@ async function saveMessage(conversationId, role, content, parentId = null, sourc
 
 async function getFoldersByNotebook(notebookId) {
   const { rows } = await pool.query(
-    'SELECT id, notebook_id, parent_id, name, created_at FROM folders WHERE notebook_id = $1 ORDER BY name ASC',
+    'SELECT id, notebook_id, parent_id, name, sort_order, created_at FROM folders WHERE notebook_id = $1 ORDER BY sort_order ASC, name ASC',
     [notebookId]
   );
   return rows;
@@ -587,6 +587,7 @@ module.exports = {
   getFinalExam,
   saveFinalExam,
   updateNotebookDocumentOrder,
+  updateTreeOrder,
 };
 
 async function getNotebookProgress(notebookId, userId) {
@@ -661,6 +662,41 @@ async function updateNotebookDocumentOrder(notebookId, order) {
     'UPDATE notebooks SET document_order = $1 WHERE id = $2',
     [order, notebookId]
   );
+}
+
+async function updateTreeOrder(notebookId, items, documentOrderArray) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    for (const item of items) {
+      if (item.type === 'folder') {
+        await client.query(
+          'UPDATE folders SET parent_id = $1, sort_order = $2 WHERE id = $3 AND notebook_id = $4',
+          [item.parentId, item.sortOrder, item.id, notebookId]
+        );
+      } else if (item.type === 'document') {
+        await client.query(
+          'UPDATE documents SET folder_id = $1, sort_order = $2 WHERE id = $3 AND notebook_id = $4',
+          [item.parentId, item.sortOrder, item.id, notebookId]
+        );
+      }
+    }
+
+    if (documentOrderArray) {
+      await client.query(
+        'UPDATE notebooks SET document_order = $1 WHERE id = $2',
+        [documentOrderArray, notebookId]
+      );
+    }
+    
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 async function updateNotebook(id, name, description, aiAssistantEnabled) {

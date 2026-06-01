@@ -193,6 +193,29 @@ app.post('/api/notebooks/:id/reorder', requireAuth, async (req, res) => {
   }
 });
 
+app.put('/api/notebooks/:id/reorder-tree', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const { items, documentOrder } = req.body;
+    if (!Array.isArray(items)) return res.status(400).json({ error: 'Formato de ítems inválido' });
+
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    await db.updateTreeOrder(notebookId, items, documentOrder);
+    await db.logActivity(req.user.id, req.user.username, 'reorder_tree', notebookId, notebook.name, null, null, `Se actualizó la estructura y orden de carpetas de "${notebook.name}"`);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[notebooks:reorder-tree]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 app.post('/api/notebooks/:id/suggest-order', requireAuth, async (req, res) => {
   try {
     const notebookId = Number(req.params.id);
