@@ -442,7 +442,7 @@ async function saveMessage(conversationId, role, content, parentId = null, sourc
 
 async function getFoldersByNotebook(notebookId) {
   const { rows } = await pool.query(
-    'SELECT id, notebook_id, parent_id, name, sort_order, created_at FROM folders WHERE notebook_id = $1 ORDER BY sort_order ASC, name ASC',
+    'SELECT id, notebook_id, parent_id, name, sort_order, quiz_enabled, created_at FROM folders WHERE notebook_id = $1 ORDER BY sort_order ASC, name ASC',
     [notebookId]
   );
   return rows;
@@ -517,7 +517,89 @@ async function getFolderPath(folderId) {
   return pathSegments.join(' / ');
 }
 
+
+async function updateFolderQuizEnabled(folderId, notebookId, enabled) {
+  const { rows } = await pool.query(
+    'UPDATE folders SET quiz_enabled = $1 WHERE id = $2 AND notebook_id = $3 RETURNING *',
+    [enabled, folderId, notebookId]
+  );
+  return rows[0] || null;
+}
+
+async function saveQuizForFolder(folderId, questions) {
+  const { rows } = await pool.query(
+    'INSERT INTO folder_quizzes (folder_id, questions) VALUES ($1, $2) ON CONFLICT (folder_id) DO UPDATE SET questions = $2 RETURNING *',
+    [folderId, JSON.stringify(questions)]
+  );
+  return rows[0];
+}
+
+async function getQuizForFolder(folderId) {
+  const { rows } = await pool.query('SELECT * FROM folder_quizzes WHERE folder_id = $1', [folderId]);
+  return rows[0] ? rows[0].questions : null;
+}
+
+async function getUserFolderProgress(userId, folderId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM user_folder_progress WHERE user_id = $1 AND folder_id = $2',
+    [userId, folderId]
+  );
+  return rows[0] || null;
+}
+
+async function saveUserFolderProgress(userId, folderId, quizPassed, score) {
+  const { rows } = await pool.query(
+    `INSERT INTO user_folder_progress (user_id, folder_id, quiz_passed, score, completed_at)
+     VALUES ($1, $2, $3, $4, NOW())
+     ON CONFLICT (user_id, folder_id) DO UPDATE SET quiz_passed = $3, score = $4, completed_at = NOW()
+     RETURNING *`,
+    [userId, folderId, quizPassed, score]
+  );
+  return rows[0];
+}
+
+async function saveQuizAttempt(userId, entityType, entityId, notebookId, score, passed, selectedAnswers) {
+  const { rows } = await pool.query(
+    `INSERT INTO quiz_attempts (user_id, entity_type, entity_id, notebook_id, score, passed, selected_answers, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+     RETURNING *`,
+    [userId, entityType, entityId, notebookId, score, passed, JSON.stringify(selectedAnswers)]
+  );
+  return rows[0];
+}
+
+async function getQuizAttempts(notebookId, filters = {}) {
+  let query = `
+    SELECT qa.*, u.username, u.full_name,
+           f.name as folder_name
+    FROM quiz_attempts qa
+    JOIN users u ON qa.user_id = u.id
+    LEFT JOIN folders f ON qa.entity_type = 'folder' AND qa.entity_id = f.id
+    WHERE qa.notebook_id = $1
+  `;
+  const params = [notebookId];
+  
+  if (filters.userId) {
+    params.push(filters.userId);
+    query += ` AND qa.user_id = ${params.length}`;
+  }
+  
+  query += ' ORDER BY qa.created_at DESC';
+  
+  const { rows } = await pool.query(query, params);
+  return rows;
+}
+
 module.exports = {
+
+  updateFolderQuizEnabled,
+  saveQuizForFolder,
+  getQuizForFolder,
+  getUserFolderProgress,
+  saveUserFolderProgress,
+  saveQuizAttempt,
+  getQuizAttempts,
+
   pool,
   initDb,
   // users
@@ -672,8 +754,8 @@ async function updateTreeOrder(notebookId, items, documentOrderArray) {
     for (const item of items) {
       if (item.type === 'folder') {
         await client.query(
-          'UPDATE folders SET parent_id = $1, sort_order = $2 WHERE id = $3 AND notebook_id = $4',
-          [item.parentId, item.sortOrder, item.id, notebookId]
+          'UPDATE folders SET parent_id = $1, sort_order = $2, quiz_enabled = $3 WHERE id = $4 AND notebook_id = $5',
+          [item.parentId, item.sortOrder, item.quizEnabled || false, item.id, notebookId]
         );
       } else if (item.type === 'document') {
         await client.query(

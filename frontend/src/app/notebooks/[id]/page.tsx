@@ -5,11 +5,11 @@ import {
   getDocuments, getDocument, uploadDocument, ingestUrl, deleteDocument,
   getConversations, getMessages, sendChat,
   searchUsers, getNotebookUsers, addNotebookUser, removeNotebookUser, createInvitation, changePassword,
-  getNotebookProgress, markDocumentRead, getDocumentQuiz, submitDocumentQuiz, getFinalExam, submitFinalExam,
+  getNotebookProgress, markDocumentRead, getFolderQuiz, submitFolderQuiz, getFinalExam, submitFinalExam,
   reorderNotebookDocuments, suggestOptimalOrder,
-  getFolders, createFolder, deleteFolder, moveDocument, moveFolder, reorderTree,
+  getFolders, createFolder, deleteFolder, moveDocument, moveFolder, reorderTree, updateFolderQuizSettings,
   type Document, type Message, type Source, type User, type NotebookUser, type Conversation,
-  type DocumentProgress, type QuizQuestion, type Folder
+  type DocumentProgress, type QuizQuestion, type Folder, type QuizAttempt, getAttempts
 } from '@/lib/api';
 
 export default function NotebookPage() {
@@ -92,6 +92,7 @@ export default function NotebookPage() {
   const [aiAssistantEnabled, setAiAssistantEnabled] = useState(false);
   const [documentOrder, setDocumentOrder] = useState<number[]>([]);
   const [userProgress, setUserProgress] = useState<Record<number, DocumentProgress>>({});
+  const [userFolderProgress, setUserFolderProgress] = useState<Record<number, any>>({});
   const [finalExamStatus, setFinalExamStatus] = useState<{ passed: boolean; score: number } | null>(null);
 
   // Course Reordering States
@@ -105,6 +106,11 @@ export default function NotebookPage() {
 
   // Quiz Modal States
   const [showQuizModal, setShowQuizModal] = useState(false);
+  const [showAttemptsModal, setShowAttemptsModal] = useState(false);
+  const [attemptsList, setAttemptsList] = useState<QuizAttempt[]>([]);
+  const [attemptsLoading, setAttemptsLoading] = useState(false);
+  const [attemptsSearch, setAttemptsSearch] = useState('');
+  const [selectedAttempt, setSelectedAttempt] = useState<QuizAttempt | null>(null);
   const [quizDocId, setQuizDocId] = useState<number | null>(null);
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [quizAnswers, setQuizAnswers] = useState<string[]>(['', '', '']);
@@ -126,8 +132,7 @@ export default function NotebookPage() {
   const [viewMode, setViewMode] = useState<'flat' | 'folders'>('flat');
   const [folders, setFolders] = useState<Folder[]>([]);
   const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
-  const [movingDocId, setMovingDocId] = useState<number | null>(null);
-  const [menuDocId, setMenuDocId] = useState<number | null>(null);
+
   const [movingFolderId, setMovingFolderId] = useState<number | null>(null);
 
   // Create Folder Modal State
@@ -180,11 +185,22 @@ export default function NotebookPage() {
     }
   }
 
+  async function handleToggleFolderQuiz(folderId: number) {
+    const folder = folders.find(f => f.id === folderId);
+    if (!folder) return;
+    const nextVal = !folder.quiz_enabled;
+    try {
+      await updateFolderQuizSettings(notebookId, folderId, nextVal);
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, quiz_enabled: nextVal } : f));
+    } catch (err: any) {
+      alert(err.message || 'Error al actualizar settings de quiz para la carpeta');
+    }
+  }
+
   async function handleMoveDoc(docId: number, targetFolderId: number | null) {
     try {
       await moveDocument(docId, targetFolderId);
       setDocs(prev => prev.map(d => d.id === docId ? { ...d, folder_id: targetFolderId } : d));
-      setMovingDocId(null);
     } catch (err: any) {
       alert(err.message || 'Error al mover documento');
     }
@@ -380,7 +396,7 @@ export default function NotebookPage() {
     setReorderLoading(true);
     try {
       const items = [
-        ...stagedFolders.map(f => ({ id: f.id, type: 'folder' as const, parentId: f.parent_id, sortOrder: f.sort_order || 0 })),
+        ...stagedFolders.map(f => ({ id: f.id, type: 'folder' as const, parentId: f.parent_id, sortOrder: f.sort_order || 0, quizEnabled: !!f.quiz_enabled })),
         ...stagedDocs.map(d => ({ id: d.id, type: 'document' as const, parentId: d.folder_id, sortOrder: d.sort_order || 0 }))
       ];
 
@@ -430,6 +446,14 @@ export default function NotebookPage() {
           progMap[p.document_id] = p;
         });
         setUserProgress(progMap);
+
+        const folderProgMap: Record<number, any> = {};
+        if (progressRes.folder_progress) {
+          progressRes.folder_progress.forEach((fp: any) => {
+            folderProgMap[fp.folder_id] = fp;
+          });
+        }
+        setUserFolderProgress(folderProgMap);
 
         // Si la IA está habilitada, ordenar los documentos según document_order
         if (progressRes.ai_assistant_enabled && progressRes.document_order && progressRes.document_order.length > 0) {
@@ -669,15 +693,28 @@ export default function NotebookPage() {
 
   // ── LMS Cuestionarios y Evaluaciones ─────────────────────────────────────────
 
-  async function handleLaunchQuiz(docId: number) {
-    setQuizDocId(docId);
+  async function handleOpenAttemptsModal() {
+    setShowAttemptsModal(true);
+    setAttemptsLoading(true);
+    try {
+      const res = await getAttempts(notebookId);
+      setAttemptsList(res.attempts);
+    } catch (err: any) {
+      alert(err.message || 'Error al cargar intentos');
+    } finally {
+      setAttemptsLoading(false);
+    }
+  }
+
+  async function handleLaunchQuiz(folderId: number) {
+    setQuizDocId(folderId); // Reutilizamos state para simplificar (deberia llamarse quizFolderId)
     setShowQuizModal(true);
     setQuizLoading(true);
     setQuizError('');
     setQuizFeedback(null);
     setQuizAnswers(['', '', '']);
     try {
-      const data = await getDocumentQuiz(docId);
+      const data = await getFolderQuiz(notebookId, folderId);
       setQuizQuestions(data.quiz.questions);
     } catch (err: any) {
       setQuizError(err.message || 'Error al cargar el cuestionario de IA.');
@@ -703,15 +740,16 @@ export default function NotebookPage() {
     setQuizSubmitting(true);
     setQuizError('');
     try {
-      const res = await submitDocumentQuiz(quizDocId, quizAnswers);
+      const res = await submitFolderQuiz(notebookId, quizDocId, quizAnswers);
       setQuizFeedback(res.feedback);
       
       if (res.passed) {
-        // Actualizar progreso localmente
-        setUserProgress(prev => ({
+        // Actualizar progreso localmente de la carpeta
+        setUserFolderProgress(prev => ({
           ...prev,
           [quizDocId]: {
-            ...(prev[quizDocId] || { document_id: quizDocId, read_checked: true }),
+            ...(prev[quizDocId] || {}),
+            folder_id: quizDocId,
             quiz_passed: true,
             score: res.score,
             completed_at: new Date().toISOString()
@@ -1218,6 +1256,14 @@ export default function NotebookPage() {
                   ⚙️ Organizar Temario
                 </button>
               )}
+              {me?.role === 'admin' && (
+                <button
+                  onClick={handleOpenAttemptsModal}
+                  className="w-full mt-2 flex items-center justify-center gap-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-xl py-2.5 text-xs font-bold transition-all shadow-sm border border-purple-100/40"
+                >
+                  📈 Intentos y Evaluaciones
+                </button>
+              )}
             </div>
           )}
 
@@ -1225,13 +1271,7 @@ export default function NotebookPage() {
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             <div className="flex items-center justify-between select-none">
               <h3 className="font-bold text-xs text-gray-500 uppercase tracking-wider">Documentos ({docs.length})</h3>
-              {docs.length > 0 && (
-                <div className="flex gap-2 text-[10px] font-bold text-indigo-600 hover:text-indigo-800">
-                  <button onClick={() => toggleAllDocs(true)}>Todos</button>
-                  <span className="text-gray-300">|</span>
-                  <button onClick={() => toggleAllDocs(false)}>Ninguno</button>
-                </div>
-              )}
+              
             </div>
 
             <div className="space-y-1.5">
@@ -1380,8 +1420,28 @@ export default function NotebookPage() {
                     } else {
                       const doc = item as Document;
                       const docIdx = documentOrder.indexOf(doc.id);
-                      const isLocked = aiAssistantEnabled && docIdx > 0 && !userProgress[documentOrder[docIdx - 1]]?.quiz_passed;
-                      const isPassed = aiAssistantEnabled && userProgress[doc.id]?.quiz_passed;
+                      let isLocked = false;
+                      if (aiAssistantEnabled && docIdx > 0) {
+                        const prevDocId = documentOrder[docIdx - 1];
+                        const prevDoc = docs.find(d => d.id === prevDocId);
+                        const prevDocProgress = userProgress[prevDocId];
+                        
+                        if (!prevDocProgress?.read_checked) {
+                          isLocked = true;
+                        } else if (prevDoc && prevDoc.folder_id) {
+                          const prevFolderDocs = docs.filter(d => d.folder_id === prevDoc.folder_id);
+                          const lastDocInPrevFolder = prevFolderDocs[prevFolderDocs.length - 1];
+                          
+                          if (prevDoc.id === lastDocInPrevFolder?.id) {
+                            const prevFolder = folders.find(f => f.id === prevDoc.folder_id);
+                            if (prevFolder?.quiz_enabled && !userFolderProgress[prevFolder.id]?.quiz_passed) {
+                              isLocked = true;
+                            }
+                          }
+                        }
+                      }
+                      
+                      const isPassed = false; // Quizzes por documento están obsoletos
                       const isRead = aiAssistantEnabled && userProgress[doc.id]?.read_checked;
 
                       return (
@@ -1426,97 +1486,6 @@ export default function NotebookPage() {
                             </div>
 
                             <div className="flex items-center gap-1 shrink-0">
-                              {!isLocked && (
-                                <div className="relative">
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setMovingDocId(movingDocId === doc.id ? null : doc.id); setMenuDocId(null); }}
-                                    className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
-                                    title="Mover documento"
-                                  >
-                                    🔄
-                                  </button>
-                                  {movingDocId === doc.id && (
-                                    <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[160px] text-left">
-                                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">Mover a...</p>
-                                      <div className="max-h-40 overflow-y-auto space-y-1">
-                                        <button
-                                          onClick={async (e) => {
-                                            e.stopPropagation();
-                                            await handleMoveDoc(doc.id, null);
-                                          }}
-                                          className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-semibold"
-                                        >
-                                          📁 Raíz (Inicio)
-                                        </button>
-                                        {folders.map(f => (
-                                          <button
-                                            key={f.id}
-                                            onClick={async (e) => {
-                                              e.stopPropagation();
-                                              await handleMoveDoc(doc.id, f.id);
-                                            }}
-                                            className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium truncate"
-                                          >
-                                            📂 {getFolderPathString(f.id)}
-                                          </button>
-                                        ))}
-                                      </div>
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); setMovingDocId(null); }}
-                                        className="w-full mt-1.5 text-center text-[10px] font-bold hover:bg-gray-100 px-2 py-1 rounded text-gray-500"
-                                      >
-                                        Cancelar
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-
-                              {!isLocked && (
-                                <div className="relative">
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setMenuDocId(menuDocId === doc.id ? null : doc.id); setMovingDocId(null); }}
-                                    className="text-gray-400 hover:text-indigo-650 p-1 hover:bg-indigo-50 rounded transition-colors text-[10px]"
-                                    title="Opciones"
-                                  >
-                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                                    </svg>
-                                  </button>
-                                  {menuDocId === doc.id && (
-                                    <div className="absolute right-0 top-6 bg-white border border-gray-200 rounded-xl shadow-lg p-2 z-35 min-w-[180px] text-left">
-                                      <div className="space-y-1">
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setMenuDocId(null);
-                                            handleOpenDocumentViewer(doc);
-                                          }}
-                                          className="w-full text-left text-xs hover:bg-indigo-50 px-2 py-1.5 rounded-lg text-gray-700 font-medium flex items-center gap-2"
-                                        >
-                                          <span>📖</span> Solo lectura
-                                        </button>
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setMenuDocId(null);
-                                            if (doc.source && doc.source.startsWith('http')) {
-                                              window.open(doc.source, '_blank');
-                                            } else {
-                                              alert('El archivo en formato original no se encuentra disponible en la nube para este documento.');
-                                            }
-                                          }}
-                                          className={`w-full text-left text-xs px-2 py-1.5 rounded-lg font-medium flex items-center gap-2 ${doc.source && doc.source.startsWith('http') ? 'hover:bg-indigo-50 text-gray-700' : 'text-gray-400 opacity-70 cursor-not-allowed'}`}
-                                          title={!(doc.source && doc.source.startsWith('http')) ? 'Archivo original no disponible' : ''}
-                                        >
-                                          <span>🌐</span> Ver formato original
-                                        </button>
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-
                               {me?.role !== 'user' && !isLocked && (
                                 <button
                                   onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
@@ -1981,20 +1950,35 @@ export default function NotebookPage() {
                   </div>
                 </div>
 
-                {userProgress[viewerDoc.id]?.read_checked && !userProgress[viewerDoc.id]?.quiz_passed && (
-                  <button
-                    onClick={() => handleLaunchQuiz(viewerDoc.id)}
-                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-xl py-2.5 text-xs tracking-wider uppercase transition-all shadow-md shadow-indigo-100 flex items-center justify-center gap-1.5 animate-pulse"
-                  >
-                    📝 Hacer Cuestionario
-                  </button>
-                )}
+                {(() => {
+                  if (!viewerDoc.folder_id) return null;
+                  const folderDocs = docs.filter(d => d.folder_id === viewerDoc.folder_id);
+                  const isLastDoc = folderDocs.length > 0 && folderDocs[folderDocs.length - 1].id === viewerDoc.id;
+                  const folder = folders.find(f => f.id === viewerDoc.folder_id);
+                  if (!isLastDoc || !folder?.quiz_enabled) return null;
 
-                {userProgress[viewerDoc.id]?.quiz_passed && (
-                  <div className="bg-green-50 border border-green-150 rounded-xl p-3 flex items-center justify-center gap-1.5 text-green-700 text-xs font-bold select-none">
-                    <span>✅ Cuestionario Aprobado ({userProgress[viewerDoc.id]?.score || 3}/3)</span>
-                  </div>
-                )}
+                  const folderProg = userFolderProgress[folder.id];
+                  
+                  if (userProgress[viewerDoc.id]?.read_checked && !folderProg?.quiz_passed) {
+                    return (
+                      <button
+                        onClick={() => handleLaunchQuiz(folder.id)}
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-xl py-2.5 text-xs tracking-wider uppercase transition-all shadow-md shadow-indigo-100 flex items-center justify-center gap-1.5 animate-pulse"
+                      >
+                        📝 Hacer Cuestionario Final de Carpeta
+                      </button>
+                    );
+                  }
+                  
+                  if (folderProg?.quiz_passed) {
+                    return (
+                      <div className="bg-green-50 border border-green-150 rounded-xl p-3 flex items-center justify-center gap-1.5 text-green-700 text-xs font-bold select-none">
+                        <span>✅ Cuestionario Aprobado ({folderProg.score || 3}/3)</span>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
             )}
           </aside>
@@ -2531,6 +2515,124 @@ export default function NotebookPage() {
           </div>
         </div>
       )}
+{/* ─── Modal: Intentos y Evaluaciones ─────────────────────────────── */}
+      {showAttemptsModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+              <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                <span>📈</span> Historial de Evaluaciones
+              </h2>
+              <button onClick={() => { setShowAttemptsModal(false); setSelectedAttempt(null); }} className="text-gray-400 hover:text-gray-600 transition-colors bg-white p-2 rounded-full shadow-sm hover:shadow">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto flex-1 flex flex-col">
+              {!selectedAttempt ? (
+                <>
+                  <div className="mb-4">
+                    <input
+                      type="text"
+                      placeholder="Buscar por nombre o usuario..."
+                      value={attemptsSearch}
+                      onChange={e => setAttemptsSearch(e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 outline-none transition-all"
+                    />
+                  </div>
+                  {attemptsLoading ? (
+                    <div className="flex-1 flex justify-center items-center py-12"><div className="w-8 h-8 border-4 border-purple-200 border-t-purple-600 rounded-full animate-spin"></div></div>
+                  ) : (
+                    <div className="overflow-x-auto border border-gray-100 rounded-xl shadow-sm">
+                      <table className="w-full text-left text-sm text-gray-600">
+                        <thead className="bg-gray-50 text-xs uppercase text-gray-500 font-semibold">
+                          <tr>
+                            <th className="px-4 py-3">Alumno</th>
+                            <th className="px-4 py-3">Evaluación</th>
+                            <th className="px-4 py-3">Puntaje</th>
+                            <th className="px-4 py-3">Estado</th>
+                            <th className="px-4 py-3">Fecha</th>
+                            <th className="px-4 py-3 text-right">Acción</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {attemptsList.filter(a => (a.full_name||'').toLowerCase().includes(attemptsSearch.toLowerCase()) || a.username.toLowerCase().includes(attemptsSearch.toLowerCase())).map(a => (
+                            <tr key={a.id} className="hover:bg-gray-50/50 transition-colors">
+                              <td className="px-4 py-3 font-medium text-gray-800">{a.full_name || a.username}</td>
+                              <td className="px-4 py-3">{a.quiz_type === 'folder' ? `Carpeta: ${a.folder_name}` : 'Examen Final'}</td>
+                              <td className="px-4 py-3 font-mono">{a.score}/{a.details.length}</td>
+                              <td className="px-4 py-3">
+                                <span className={`px-2 py-1 rounded-full text-[10px] font-bold ${a.passed ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                  {a.passed ? 'APROBADO' : 'REPROBADO'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-xs text-gray-500">{new Date(a.created_at).toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right">
+                                <button onClick={() => setSelectedAttempt(a)} className="text-purple-600 hover:text-purple-800 font-semibold text-xs bg-purple-50 hover:bg-purple-100 px-3 py-1.5 rounded-lg transition-colors">
+                                  Revisión
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                          {attemptsList.length === 0 && (
+                            <tr><td colSpan={6} className="text-center py-8 text-gray-400">No hay intentos registrados</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="flex flex-col gap-6">
+                  <div className="flex items-center gap-4 border-b border-gray-100 pb-4">
+                    <button onClick={() => setSelectedAttempt(null)} className="text-gray-500 hover:text-gray-800 transition-colors flex items-center gap-1 font-semibold text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg">
+                      ← Volver
+                    </button>
+                    <div>
+                      <h3 className="font-bold text-gray-900">{selectedAttempt.full_name || selectedAttempt.username}</h3>
+                      <p className="text-xs text-gray-500">{selectedAttempt.quiz_type === 'folder' ? `Carpeta: ${selectedAttempt.folder_name}` : 'Examen Final'} - {new Date(selectedAttempt.created_at).toLocaleString()}</p>
+                    </div>
+                    <div className="ml-auto">
+                      <span className={`px-3 py-1.5 rounded-xl text-sm font-bold ${selectedAttempt.passed ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        {selectedAttempt.score}/{selectedAttempt.details.length} ({selectedAttempt.passed ? 'Aprobado' : 'Reprobado'})
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    {selectedAttempt.details.map((q, i) => (
+                      <div key={i} className={`p-4 rounded-xl border ${q.isCorrect ? 'bg-green-50/30 border-green-100' : 'bg-red-50/30 border-red-100'}`}>
+                        <div className="flex items-start gap-3">
+                          <div className={`mt-1 w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-white font-bold text-xs ${q.isCorrect ? 'bg-green-500' : 'bg-red-500'}`}>
+                            {q.isCorrect ? '✓' : '×'}
+                          </div>
+                          <div>
+                            <h4 className="font-bold text-gray-800 text-sm mb-2">{i+1}. {q.question}</h4>
+                            <div className="text-sm text-gray-600 mb-2">
+                              <span className="font-semibold">Respuesta del alumno:</span> 
+                              <span className={`ml-1 ${q.isCorrect ? 'text-green-700' : 'text-red-600 font-medium'}`}>{q.selectedOption || '(Sin responder)'}</span>
+                            </div>
+                            {!q.isCorrect && (
+                              <div className="text-sm text-gray-600 mb-2">
+                                <span className="font-semibold">Respuesta correcta:</span> 
+                                <span className="ml-1 text-green-700 font-medium">{q.correctOption}</span>
+                              </div>
+                            )}
+                            <div className="text-xs text-gray-500 bg-white/60 p-2 rounded border border-gray-200/50 mt-2">
+                              <strong>Explicación:</strong> {q.explanation}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ─── Modal: Organizar Temario del Curso ─────────────────────────────── */}
       {showOrderModal && (
         <div className="fixed inset-0 bg-black/45 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
@@ -2705,25 +2807,37 @@ export default function NotebookPage() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            disabled={index === 0 || reorderLoading || suggestingOrder}
-                            onClick={() => handleMoveModalItem(index, 'up')}
-                            className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-gray-400 p-1 hover:bg-white rounded transition-colors"
-                            title="Subir nivel"
-                          >
-                            ▲
-                          </button>
-                          <button
-                            type="button"
-                            disabled={index === modalCombinedItems.length - 1 || reorderLoading || suggestingOrder}
-                            onClick={() => handleMoveModalItem(index, 'down')}
-                            className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-gray-400 p-1 hover:bg-white rounded transition-colors"
-                            title="Bajar nivel"
-                          >
-                            ▼
-                          </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {isFolder && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleToggleFolderQuiz(item.id); }}
+                              className={`text-[10px] font-bold px-2 py-1 rounded-full transition-colors flex items-center gap-1 ${item.quiz_enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+                              title={item.quiz_enabled ? 'Quiz obligatorio al terminar la carpeta' : 'Sin quiz'}
+                            >
+                              {item.quiz_enabled ? '📝 Quiz ON' : 'Quiz OFF'}
+                            </button>
+                          )}
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={index === 0 || reorderLoading || suggestingOrder}
+                              onClick={() => handleMoveModalItem(index, 'up')}
+                              className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-gray-400 p-1 hover:bg-white rounded transition-colors"
+                              title="Subir nivel"
+                            >
+                              ▲
+                            </button>
+                            <button
+                              type="button"
+                              disabled={index === modalCombinedItems.length - 1 || reorderLoading || suggestingOrder}
+                              onClick={() => handleMoveModalItem(index, 'down')}
+                              className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 disabled:hover:text-gray-400 p-1 hover:bg-white rounded transition-colors"
+                              title="Bajar nivel"
+                            >
+                              ▼
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );

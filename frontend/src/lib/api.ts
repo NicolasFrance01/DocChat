@@ -239,7 +239,15 @@ export interface Folder {
   parent_id: number | null;
   name: string;
   sort_order: number;
+  quiz_enabled: boolean;
   created_at: string;
+}
+
+export async function updateFolderQuizSettings(notebookId: number, folderId: number, quizEnabled: boolean) {
+  return request(`/api/notebooks/${notebookId}/folders/${folderId}/quiz`, {
+    method: 'PUT',
+    body: JSON.stringify({ quiz_enabled: quizEnabled }),
+  });
 }
 
 export async function getFolders(notebookId: number) {
@@ -351,15 +359,40 @@ export async function markDocumentRead(docId: number, checked: boolean) {
   });
 }
 
-export async function getDocumentQuiz(docId: number) {
-  return request<QuizResponse>(`/api/documents/${docId}/quiz`);
+export async function getFolderQuiz(notebookId: number, folderId: number) {
+  return request<QuizResponse>(`/api/notebooks/${notebookId}/folders/${folderId}/quiz`);
 }
 
-export async function submitDocumentQuiz(docId: number, answers: string[]) {
-  return request<QuizSubmitResponse>(`/api/documents/${docId}/quiz/submit`, {
+export async function submitFolderQuiz(notebookId: number, folderId: number, answers: string[]) {
+  return request<QuizSubmitResponse>(`/api/notebooks/${notebookId}/folders/${folderId}/quiz/submit`, {
     method: 'POST',
     body: JSON.stringify({ answers }),
   });
+}
+
+export interface QuizAttempt {
+  id: number;
+  user_id: number;
+  full_name: string;
+  username: string;
+  quiz_type: string;
+  target_id: number;
+  score: number;
+  passed: boolean;
+  created_at: string;
+  folder_name: string | null;
+  details: {
+    questionIndex: number;
+    question: string;
+    selectedOption: string;
+    correctOption: string;
+    isCorrect: boolean;
+    explanation: string;
+  }[];
+}
+
+export async function getAttempts(notebookId: number) {
+  return request<{ attempts: QuizAttempt[] }>(`/api/notebooks/${notebookId}/attempts`);
 }
 
 export async function getFinalExam(notebookId: number) {
@@ -394,8 +427,16 @@ export interface DocumentProgress {
   completed_at: string | null;
 }
 
+export interface FolderProgress {
+  folder_id: number;
+  quiz_passed: boolean;
+  score: number | null;
+  completed_at: string | null;
+}
+
 export interface NotebookProgressResponse {
   progress: DocumentProgress[];
+  folder_progress: FolderProgress[];
   document_order: number[];
   ai_assistant_enabled: boolean;
   final_exam: { passed: boolean; score: number } | null;

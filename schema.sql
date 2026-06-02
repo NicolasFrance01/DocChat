@@ -77,9 +77,12 @@ CREATE TABLE IF NOT EXISTS folders (
   parent_id   INTEGER REFERENCES folders(id) ON DELETE CASCADE,
   name        TEXT NOT NULL,
   sort_order  INTEGER NOT NULL DEFAULT 0,
+  quiz_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   created_at  TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(notebook_id, parent_id, name)
 );
+
+ALTER TABLE folders ADD COLUMN IF NOT EXISTS quiz_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- ─── Documents ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS documents (
@@ -136,10 +139,16 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id);
 
--- ─── Cuestionarios de Documentos (Generados por IA) ──────────────────────────
+-- ─── Cuestionarios de Documentos (Generados por IA) (OBSOLETO, PERO MANTENIDO POR COMPATIBILIDAD) ──
 CREATE TABLE IF NOT EXISTS document_quizzes (
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE PRIMARY KEY,
   questions   JSONB NOT NULL
+);
+
+-- ─── Cuestionarios de Carpetas (Generados por IA) ─────────────────────────────
+CREATE TABLE IF NOT EXISTS folder_quizzes (
+  folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE PRIMARY KEY,
+  questions JSONB NOT NULL
 );
 
 -- ─── Progreso de Lectura y Cuestionarios por Usuario ──────────────────────────
@@ -147,10 +156,31 @@ CREATE TABLE IF NOT EXISTS user_document_progress (
   user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   read_checked BOOLEAN NOT NULL DEFAULT FALSE,
-  quiz_passed  BOOLEAN NOT NULL DEFAULT FALSE,
+  quiz_passed  BOOLEAN NOT NULL DEFAULT FALSE, -- Mantenido por retrocompatibilidad temporal
   score        INTEGER,
   completed_at TIMESTAMPTZ,
   PRIMARY KEY (user_id, document_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_folder_progress (
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  folder_id    INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+  quiz_passed  BOOLEAN NOT NULL DEFAULT FALSE,
+  score        INTEGER,
+  completed_at TIMESTAMPTZ,
+  PRIMARY KEY (user_id, folder_id)
+);
+
+CREATE TABLE IF NOT EXISTS quiz_attempts (
+  id             SERIAL PRIMARY KEY,
+  user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  entity_type    TEXT NOT NULL, -- 'folder' | 'exam'
+  entity_id      INTEGER NOT NULL, -- folder_id o notebook_id
+  notebook_id    INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+  score          INTEGER NOT NULL,
+  passed         BOOLEAN NOT NULL,
+  selected_answers JSONB, -- [{ questionIndex: 0, selectedOption: "A", isCorrect: true }]
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ─── Exámenes Finales por Notebook ───────────────────────────────────────────

@@ -137,7 +137,7 @@ async function chat({ notebookId, userMessage, history = [], documentIds = null 
 
 // ─── Streaming version (SSE) ──────────────────────────────────────────────────
 
-async function chatStream({ notebookId, userMessage, history = [], documentIds = null, onChunk, onDone }) {
+async function chatStream({ notebookId, userMessage, history = [], documentIds = null, progressSummary = null, onChunk, onDone }) {
   const recentHistory = history.slice(-12);
 
   let relevantChunks = [];
@@ -146,7 +146,18 @@ async function chatStream({ notebookId, userMessage, history = [], documentIds =
     relevantChunks = await db.searchChunks(notebookId, queryEmbedding, 5, documentIds);
   } catch { /* fall through to free mode */ }
 
-  const systemPrompt = relevantChunks.length > 0 ? SYSTEM_PROMPT_RAG : SYSTEM_PROMPT_FREE;
+  let systemPrompt = relevantChunks.length > 0 ? SYSTEM_PROMPT_RAG : SYSTEM_PROMPT_FREE;
+  
+  if (progressSummary) {
+    systemPrompt += `\n\n[CONTEXTO DE PROGRESO DEL ALUMNO]
+Eres un tutor guía. Tienes acceso al estado de lectura del alumno. Si el alumno te pregunta por dónde va, qué tiene que hacer a continuación o se muestra perdido, usa esta información para guiarle.
+- Documentos leídos: ${progressSummary.readDocuments.length > 0 ? progressSummary.readDocuments.join(', ') : 'Ninguno'}
+- Documentos pendientes por leer: ${progressSummary.unreadDocuments.length > 0 ? progressSummary.unreadDocuments.join(', ') : 'Ninguno (ha terminado todo)'}
+- Carpetas que requieren Cuestionario para avanzar: ${progressSummary.folderProgress.filter(f => f.quizEnabled).map(f => `${f.name} (Aprobado: ${f.quizPassed ? 'Sí' : 'No'})`).join(', ') || 'Ninguna'}
+
+Recuerda ser empático y claro al decirle al alumno qué documento exacto debe leer a continuación (típicamente el primer documento pendiente).`;
+  }
+
   const userContent = buildUserContent(userMessage, relevantChunks);
 
   const stream = await getGroq().chat.completions.create({

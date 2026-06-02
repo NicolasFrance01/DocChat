@@ -193,6 +193,47 @@ app.post('/api/notebooks/:id/reorder', requireAuth, async (req, res) => {
   }
 });
 
+
+app.put('/api/notebooks/:id/folders/:folderId/quiz', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const folderId = Number(req.params.folderId);
+    const { quiz_enabled } = req.body;
+
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    await db.updateFolderQuizEnabled(folderId, notebookId, !!quiz_enabled);
+
+    // If quiz is enabled, generate it asynchronously
+    if (quiz_enabled) {
+      generateAndStoreFolderQuiz(notebookId, folderId).catch(err => console.error('[folder:quiz:generate]', err));
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[folders:quiz]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+async function generateAndStoreFolderQuiz(notebookId, folderId) {
+  const documents = await db.getDocumentsByNotebook(notebookId);
+  const folderDocs = documents.filter(d => d.folder_id === folderId);
+  if (folderDocs.length === 0) return;
+
+  const combinedText = folderDocs.map(d => `Documento: ${d.name}\n${d.raw_text}`).join('\n\n--- \n\n');
+  
+  const { generateQuizForDocument } = require('./ai');
+  const questions = await generateQuizForDocument(combinedText);
+  await db.saveQuizForFolder(folderId, questions);
+  console.log(`[ingest] Quiz autogenerado y guardado para carpeta ${folderId}`);
+}
+
 app.put('/api/notebooks/:id/reorder-tree', requireAuth, async (req, res) => {
   try {
     const notebookId = Number(req.params.id);
@@ -933,10 +974,27 @@ app.post('/api/notebooks/:id/chat', requireAuth, async (req, res) => {
     let fullAnswer = '';
     let finalSources = [];
 
+    const progress = await db.getNotebookProgress(notebook.id, req.user.id);
+    const folderProgressList = await db.getFolderProgressForUser(req.user.id);
+    // filter folder progress for this notebook's folders
+    const documents = await db.getDocumentsByNotebook(notebook.id);
+    const folders = await db.getFoldersByNotebook(notebook.id);
+    
+    // Create an object to summarize the progress state to guide the user
+    const progressSummary = {
+      readDocuments: progress.filter(p => p.read_checked).map(p => documents.find(d => d.id === p.document_id)?.name),
+      unreadDocuments: documents.filter(d => !progress.find(p => p.document_id === d.id && p.read_checked)).map(d => d.name),
+      folderProgress: folders.map(f => {
+        const fp = folderProgressList.find(p => p.folder_id === f.id);
+        return { name: f.name, quizEnabled: f.quiz_enabled, quizPassed: fp?.quiz_passed };
+      })
+    };
+
     await chatStream({
       notebookId: notebook.id,
       userMessage: message,
       history,
+      progressSummary,
       documentIds: document_ids, // Filter search chunks by active documents!
       onChunk: (delta) => {
         res.write(`data: ${JSON.stringify({ type: 'delta', content: delta })}\n\n`);
@@ -982,15 +1040,108 @@ app.get('/api/notebooks/:id/progress', requireAuth, async (req, res) => {
 
     const progress = await db.getNotebookProgress(notebook.id, req.user.id);
     const finalExam = await db.getFinalExam(req.user.id, notebook.id);
+    
+    // Get folder progress
+    const { rows: folderProgressRows } = await db.pool.query(
+      'SELECT folder_id, quiz_passed, score, completed_at FROM user_folder_progress WHERE user_id = $1',
+      [req.user.id]
+    );
 
     res.json({
       progress,
+      folder_progress: folderProgressRows,
       document_order: notebook.document_order || [],
       ai_assistant_enabled: notebook.ai_assistant_enabled,
       final_exam: finalExam ? { passed: finalExam.passed, score: finalExam.score } : null
     });
   } catch (err) {
     console.error('[progress]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.get('/api/notebooks/:id/folders/:folderId/quiz', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const folderId = Number(req.params.folderId);
+    
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    let quiz = await db.getQuizForFolder(folderId);
+    if (!quiz) {
+      console.log(`[quiz] Quiz no pregenerado para carpeta ${folderId}. Generando en caliente…`);
+      const documents = await db.getDocumentsByNotebook(notebookId);
+      const folderDocs = documents.filter(d => d.folder_id === folderId);
+      if (folderDocs.length === 0) return res.status(404).json({ error: 'Carpeta vacía' });
+
+      const combinedText = folderDocs.map(d => `Documento: ${d.name}\n${d.raw_text}`).join('\n\n--- \n\n');
+      const { generateQuizForDocument } = require('./ai');
+      const questions = await generateQuizForDocument(combinedText);
+      await db.saveQuizForFolder(folderId, questions);
+      quiz = questions;
+    }
+
+    const questionsForClient = quiz.map(q => ({
+      question: q.question,
+      options: q.options
+    }));
+
+    res.json({ quiz: { document_id: folderId, questions: questionsForClient } });
+  } catch (err) {
+    console.error('[quiz:get]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.post('/api/notebooks/:id/folders/:folderId/quiz/submit', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const folderId = Number(req.params.folderId);
+    const { answers } = req.body;
+
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    const quiz = await db.getQuizForFolder(folderId);
+    if (!quiz) return res.status(404).json({ error: 'Cuestionario no encontrado' });
+
+    let score = 0;
+    const selectedAnswersArray = [];
+    quiz.forEach((q, idx) => {
+      const isCorrect = answers[idx] && answers[idx].startsWith(q.correct);
+      if (isCorrect) score++;
+      
+      selectedAnswersArray.push({
+        questionIndex: idx,
+        question: q.question,
+        selectedOption: answers[idx] || '',
+        correctOption: q.correct,
+        isCorrect,
+        explanation: q.explanation
+      });
+    });
+
+    const passed = score === quiz.length;
+    
+    // Save detailed attempt
+    await db.saveQuizAttempt(req.user.id, 'folder', folderId, notebookId, score, passed, selectedAnswersArray);
+
+    if (passed) {
+      await db.saveUserFolderProgress(req.user.id, folderId, true, score);
+    }
+
+    const feedback = quiz.map((q, idx) => ({
+      questionIndex: idx,
+      userAnswer: answers[idx] || '',
+      isCorrect: answers[idx] && answers[idx].startsWith(q.correct),
+      correctAnswer: q.options.find(o => o.startsWith(q.correct)) || q.correct,
+      explanation: q.explanation
+    }));
+
+    res.json({ passed, score, total: quiz.length, feedback });
+  } catch (err) {
+    console.error('[quiz:submit]', err);
     res.status(500).json({ error: 'Error interno' });
   }
 });
@@ -1013,48 +1164,6 @@ app.post('/api/documents/:id/read', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/documents/:id/quiz', requireAuth, async (req, res) => {
-  try {
-    const docId = Number(req.params.id);
-    const doc = await db.getDocumentById(docId);
-    if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
-
-    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
-    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
-
-    let quiz = await db.getQuizByDocument(docId);
-    if (!quiz) {
-      console.log(`[quiz] Quiz no pregenerado para documento ${docId}. Generando en caliente…`);
-      const { generateQuizForDocument } = require('./ai');
-      const questions = await generateQuizForDocument(doc.raw_text || '');
-      await db.saveQuizForDocument(docId, questions);
-      quiz = { document_id: docId, questions };
-    }
-
-    // Ocultar respuestas y explicaciones correctas al enviarlo al cliente
-    const questionsForClient = quiz.questions.map(q => ({
-      question: q.question,
-      options: q.options
-    }));
-
-    res.json({ quiz: { document_id: docId, questions: questionsForClient } });
-  } catch (err) {
-    console.error('[quiz:get]', err);
-    res.status(500).json({ error: 'Error interno' });
-  }
-});
-
-app.post('/api/documents/:id/quiz/submit', requireAuth, async (req, res) => {
-  try {
-    const docId = Number(req.params.id);
-    const { answers } = req.body;
-    if (!Array.isArray(answers)) return res.status(400).json({ error: 'Formato de respuestas inválido' });
-
-    const doc = await db.getDocumentById(docId);
-    if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
-
-    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
-    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
 
     const quiz = await db.getQuizByDocument(docId);
     if (!quiz) return res.status(404).json({ error: 'Cuestionario no encontrado' });
@@ -1084,6 +1193,32 @@ app.post('/api/documents/:id/quiz/submit', requireAuth, async (req, res) => {
     res.json({ passed, score, total: questions.length, feedback });
   } catch (err) {
     console.error('[quiz:submit]', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+app.get('/api/notebooks/:id/attempts', requireAuth, async (req, res) => {
+  try {
+    const notebookId = Number(req.params.id);
+    const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (req.user.role !== 'admin' && req.user.id !== notebook.created_by) {
+      return res.status(403).json({ error: 'Sin permiso para ver intentos de este notebook' });
+    }
+
+    const { rows } = await db.pool.query(`
+      SELECT qa.id, qa.user_id, u.full_name, u.username, qa.quiz_type, qa.target_id, qa.score, qa.passed, qa.created_at, qa.details, f.name as folder_name
+      FROM quiz_attempts qa
+      JOIN users u ON qa.user_id = u.id
+      LEFT JOIN folders f ON qa.quiz_type = 'folder' AND qa.target_id = f.id
+      WHERE qa.notebook_id = $1
+      ORDER BY qa.created_at DESC
+    `, [notebookId]);
+
+    res.json({ attempts: rows });
+  } catch (err) {
+    console.error('[attempts:get]', err);
     res.status(500).json({ error: 'Error interno' });
   }
 });
