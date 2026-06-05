@@ -180,7 +180,7 @@ export async function claimInvitation(token: string) {
 // ─── Documents ────────────────────────────────────────────────────────────────
 
 export async function getDocuments(notebookId: number) {
-  return request<{ documents: Document[] }>(`/api/notebooks/${notebookId}/documents`);
+  return request<{ documents: Document[], notebookName?: string }>(`/api/notebooks/${notebookId}/documents`);
 }
 
 export async function getDocument(id: number) {

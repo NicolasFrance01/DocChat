@@ -279,11 +279,7 @@ export default function NotebooksPage() {
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
         <div className="flex items-center gap-2.5">
-          <img src="/logoDocChat.png" alt="DocChat Logo" className="h-9 w-auto object-contain" />
-          <div className="flex flex-col">
-            <span className="font-bold text-base text-gray-900 leading-tight">DocChat</span>
-            <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">{me.role}</span>
-          </div>
+          <img src="/logoDocChat.png" alt="DocChat Logo" className="h-10 w-auto object-contain" />
         </div>
         
         <div className="flex items-center gap-4">
@@ -320,7 +316,7 @@ export default function NotebooksPage() {
         <div className="flex items-center justify-between mb-8">
           <div className="space-y-0.5">
             <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Mis Notebooks</h2>
-            <p className="text-sm text-gray-500 font-medium">Accede a tus colecciones de documentos para chatear con ellos</p>
+            <p className="text-sm text-gray-500 font-medium">Bienvenido {me.full_name || me.username}. Accede a tus colecciones de documentos para chatear con ellos</p>
           </div>
           {me.role !== 'user' && (
             <button

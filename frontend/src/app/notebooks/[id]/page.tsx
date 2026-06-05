@@ -32,6 +32,7 @@ export default function NotebookPage() {
 
   // Notebook metadata / allowed checks
   const [isCreator, setIsCreator] = useState(false);
+  const [notebookName, setNotebookName] = useState('');
 
   // Documents state
   const [docs, setDocs] = useState<Document[]>([]);
@@ -559,6 +560,7 @@ export default function NotebookPage() {
   async function loadDocs() {
     try {
       const data = await getDocuments(notebookId);
+      if (data.notebookName) setNotebookName(data.notebookName);
       
       // Cargar progreso del curso (LMS)
       let currentDocs = data.documents;
@@ -1346,11 +1348,7 @@ export default function NotebookPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
             </svg>
           </button>
-          <img src="/logoDocChat.png" alt="DocChat Logo" className="h-8 w-auto object-contain" />
-          <div className="flex flex-col">
-            <span className="font-bold text-sm text-gray-900 leading-tight">DocChat</span>
-            <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Notebook #{notebookId}</span>
-          </div>
+          <img src="/logoDocChat.png" alt="DocChat Logo" className="h-10 w-auto object-contain" />
         </div>
 
         <div className="flex items-center gap-3">
@@ -1389,6 +1387,11 @@ export default function NotebookPage() {
           {/* Notebook Role Controls */}
           {me?.role !== 'user' && (
             <div className="p-4 border-b border-gray-100 space-y-3 bg-gray-50/50">
+              {notebookName && (
+                <div className="bg-indigo-600 text-white px-3 py-2.5 rounded-xl shadow-md shadow-indigo-100 text-center">
+                  <h2 className="font-bold text-sm leading-tight line-clamp-2" title={notebookName}>{notebookName}</h2>
+                </div>
+              )}
               <h3 className="font-bold text-xs text-gray-500 uppercase tracking-wider select-none">Cargar Recursos</h3>
 
               {/* Upload file */}

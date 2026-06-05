@@ -485,7 +485,7 @@ app.get('/api/notebooks/:id/documents', requireAuth, async (req, res) => {
     const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
     if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
     const documents = await db.getDocumentsByNotebook(notebook.id);
-    res.json({ documents });
+    res.json({ documents, notebookName: notebook.name });
   } catch (err) {
     console.error('[documents:list]', err);
     res.status(500).json({ error: 'Error interno' });
