@@ -330,6 +330,37 @@ async function renameDocument(id, newName) {
   return rows[0] || null;
 }
 
+async function updateDocumentData(id, { name, content_url, transcription, chunk_count }) {
+  const updates = [];
+  const values = [];
+  let idx = 1;
+  
+  if (name !== undefined) {
+    updates.push(`name = $${idx++}`);
+    values.push(name);
+  }
+  if (content_url !== undefined) {
+    updates.push(`content_url = $${idx++}`);
+    values.push(content_url);
+  }
+  if (transcription !== undefined) {
+    updates.push(`transcription = $${idx++}`);
+    values.push(transcription);
+  }
+  if (chunk_count !== undefined) {
+    updates.push(`chunk_count = $${idx++}`);
+    values.push(chunk_count);
+  }
+  
+  if (updates.length === 0) return null;
+  
+  values.push(id);
+  const query = `UPDATE documents SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`;
+  
+  const { rows } = await pool.query(query, values);
+  return rows[0] || null;
+}
+
 // ─── Document chunks ──────────────────────────────────────────────────────────
 
 async function insertChunks(chunks) {
@@ -660,6 +691,7 @@ module.exports = {
   updateDocumentChunkCount,
   deleteDocument,
   renameDocument,
+  updateDocumentData,
   // chunks
   insertChunks,
   searchChunks,

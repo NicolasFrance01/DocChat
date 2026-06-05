@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  getDocuments, getDocument, uploadDocument, ingestUrl, ingestVideo, updateVideoTranscription, uploadVideoTranscriptionFile, deleteDocument, renameDocument,
+  getDocuments, getDocument, uploadDocument, ingestUrl, ingestVideo, updateVideoTranscription, uploadVideoTranscriptionFile, deleteDocument, renameDocument, updateDocumentWithFile,
   getConversations, getMessages, sendChat,
   searchUsers, getNotebookUsers, addNotebookUser, removeNotebookUser, createInvitation, changePassword,
   getNotebookProgress, markDocumentRead, getFolderQuiz, submitFolderQuiz, getFinalExam, submitFinalExam,
@@ -68,6 +68,17 @@ export default function NotebookPage() {
   const [sources, setSources] = useState<Source[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Edit & Delete Custom Modals
+  const [editModalItem, setEditModalItem] = useState<{ id: number, type: 'document' | 'folder', docType?: string, currentName: string, embedCode?: string } | null>(null);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editFile, setEditFile] = useState<File | null>(null);
+  const [editTranscriptFile, setEditTranscriptFile] = useState<File | null>(null);
+  const [editNameInput, setEditNameInput] = useState('');
+  const [editEmbedCodeInput, setEditEmbedCodeInput] = useState('');
+
+  const [deleteModalItem, setDeleteModalItem] = useState<{ id: number, type: 'document' | 'folder', name: string } | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   // Share ACL Modal State
   const [showShareModal, setShowShareModal] = useState(false);
@@ -231,27 +242,65 @@ export default function NotebookPage() {
     }
   }
 
-  async function handleRenameModalItem(id: number, type: 'document' | 'folder', currentName: string) {
-    const newName = window.prompt(`Renombrar ${type === 'folder' ? 'carpeta' : 'documento'}:`, currentName);
-    if (!newName || newName.trim() === currentName) return;
+  function handleRenameModalItem(id: number, type: 'document' | 'folder', currentName: string) {
+    const doc = type === 'document' ? stagedDocs.find(d => d.id === id) : null;
+    setEditModalItem({
+      id,
+      type,
+      docType: doc?.type,
+      currentName,
+      embedCode: doc?.type === 'video' ? doc.content_url : undefined
+    });
+    setEditNameInput(currentName);
+    setEditEmbedCodeInput(doc?.type === 'video' ? doc.content_url || '' : '');
+    setEditFile(null);
+    setEditTranscriptFile(null);
+  }
+
+  function handleDeleteModalItem(id: number, type: 'document' | 'folder') {
+    const item = type === 'folder' ? stagedFolders.find(f => f.id === id) : stagedDocs.find(d => d.id === id);
+    if (!item) return;
+    setDeleteModalItem({ id, type, name: item.name });
+  }
+
+  async function submitEditModalItem() {
+    if (!editModalItem || !editNameInput.trim()) return;
+    setEditLoading(true);
     try {
-      if (type === 'folder') {
-        const res = await renameFolder(id, newName.trim());
-        setFolders(prev => prev.map(f => f.id === id ? { ...f, name: res.folder.name } : f));
-        setStagedFolders(prev => prev.map(f => f.id === id ? { ...f, name: res.folder.name } : f));
+      if (editModalItem.type === 'folder') {
+        const res = await renameFolder(editModalItem.id, editNameInput.trim());
+        setFolders(prev => prev.map(f => f.id === editModalItem.id ? { ...f, name: res.folder.name } : f));
+        setStagedFolders(prev => prev.map(f => f.id === editModalItem.id ? { ...f, name: res.folder.name } : f));
       } else {
-        const res = await renameDocument(id, newName.trim());
-        setDocs(prev => prev.map(d => d.id === id ? { ...d, name: res.document.name } : d));
-        setStagedDocs(prev => prev.map(d => d.id === id ? { ...d, name: res.document.name } : d));
+        let newDoc;
+        if (editFile || editEmbedCodeInput) {
+           const res = await updateDocumentWithFile(editModalItem.id, editNameInput.trim(), editFile, editEmbedCodeInput);
+           newDoc = res.document;
+        } else {
+           const res = await renameDocument(editModalItem.id, editNameInput.trim());
+           newDoc = res.document;
+        }
+        
+        if (editModalItem.docType === 'video' && editTranscriptFile) {
+          await uploadVideoTranscriptionFile(editModalItem.id, editTranscriptFile);
+        }
+
+        setDocs(prev => prev.map(d => d.id === editModalItem.id ? { ...d, name: newDoc.name, content_url: newDoc.content_url, chunk_count: newDoc.chunk_count, transcription: newDoc.transcription } : d));
+        setStagedDocs(prev => prev.map(d => d.id === editModalItem.id ? { ...d, name: newDoc.name, content_url: newDoc.content_url, chunk_count: newDoc.chunk_count, transcription: newDoc.transcription } : d));
       }
+      setEditModalItem(null);
     } catch (err: any) {
-      alert(err.message || 'Error al renombrar');
+      alert(err.message || 'Error al guardar cambios');
+    } finally {
+      setEditLoading(false);
     }
   }
 
-  async function handleDeleteModalItem(id: number, type: 'document' | 'folder') {
-    if (!window.confirm(`¿Seguro que deseas eliminar este ${type === 'folder' ? 'carpeta' : 'documento'}?`)) return;
+  async function submitDeleteModalItem() {
+    if (!deleteModalItem) return;
+    setDeleteLoading(true);
     try {
+      const { id, type } = deleteModalItem;
       if (type === 'folder') {
         await deleteFolder(id);
         setFolders(prev => prev.filter(f => f.id !== id));
@@ -268,8 +317,11 @@ export default function NotebookPage() {
           return updated;
         });
       }
+      setDeleteModalItem(null);
     } catch (err: any) {
       alert(err.message || 'Error al eliminar');
+    } finally {
+      setDeleteLoading(false);
     }
   }
 
@@ -3240,6 +3292,141 @@ export default function NotebookPage() {
                 className="px-4 py-2 rounded-xl text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors shadow-md shadow-indigo-100 disabled:opacity-50"
               >
                 {creatingFolder ? 'Creando...' : 'Crear Carpeta'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ─── EDIT ITEM MODAL ──────────────────────────────────────────────── */}
+      {editModalItem && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl w-full max-w-md flex flex-col shadow-2xl border border-gray-100 overflow-hidden animate-slide-up">
+            <div className="px-6 py-4.5 border-b border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">✏️</span>
+                <h3 className="font-bold text-gray-900 text-lg">
+                  Editar {editModalItem.type === 'folder' ? 'Carpeta' : (editModalItem.docType === 'video' ? 'Video' : 'Documento')}
+                </h3>
+              </div>
+              <button onClick={() => setEditModalItem(null)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+              {/* Name Input - All types */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-gray-700">Nombre</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={editNameInput}
+                  onChange={e => setEditNameInput(e.target.value)}
+                  placeholder="Ej: Introducción"
+                  className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-medium"
+                />
+              </div>
+
+              {/* File upload - Files only */}
+              {editModalItem.type === 'document' && (!editModalItem.docType || ['pdf', 'docx', 'txt'].includes(editModalItem.docType)) && (
+                <div className="space-y-1.5 pt-2">
+                  <label className="text-xs font-semibold text-gray-700">Reemplazar Archivo (Opcional)</label>
+                  <p className="text-[10px] text-gray-500 mb-1">Si subes un nuevo archivo, el documento se procesará de nuevo.</p>
+                  <input
+                    type="file"
+                    accept=".pdf,.docx,.txt,.md"
+                    onChange={e => setEditFile(e.target.files ? e.target.files[0] : null)}
+                    className="w-full text-sm text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition-all"
+                  />
+                </div>
+              )}
+
+              {/* Video fields - Videos only */}
+              {editModalItem.type === 'document' && editModalItem.docType === 'video' && (
+                <>
+                  <div className="space-y-1.5 pt-2">
+                    <label className="text-xs font-semibold text-gray-700">Código Iframe (Embed URL)</label>
+                    <textarea
+                      value={editEmbedCodeInput}
+                      onChange={e => setEditEmbedCodeInput(e.target.value)}
+                      placeholder="<iframe src='...'></iframe>"
+                      rows={3}
+                      className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-mono text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1.5 pt-2 border-t border-gray-100">
+                    <label className="text-xs font-semibold text-gray-700">Subir nueva transcripción (Opcional)</label>
+                    <p className="text-[10px] text-gray-500 mb-1">Archivo de texto con los subtítulos o guion del video.</p>
+                    <input
+                      type="file"
+                      accept=".txt"
+                      onChange={e => setEditTranscriptFile(e.target.files ? e.target.files[0] : null)}
+                      className="w-full text-sm text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition-all"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
+              <button
+                onClick={() => setEditModalItem(null)}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-100 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={submitEditModalItem}
+                disabled={editLoading || !editNameInput.trim()}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors shadow-md shadow-indigo-100 disabled:opacity-50"
+              >
+                {editLoading ? 'Guardando...' : 'Guardar Cambios'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── DELETE ITEM MODAL ────────────────────────────────────────────── */}
+      {deleteModalItem && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl w-full max-w-sm flex flex-col shadow-2xl border border-gray-100 overflow-hidden animate-slide-up">
+            <div className="px-6 py-4.5 border-b border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">🗑️</span>
+                <h3 className="font-bold text-gray-900 text-lg">Eliminar Elemento</h3>
+              </div>
+              <button onClick={() => setDeleteModalItem(null)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="p-6">
+              <p className="text-sm text-gray-600 font-medium">
+                ¿Estás seguro que deseas eliminar {deleteModalItem.type === 'folder' ? 'la carpeta' : 'el documento'} <strong className="text-gray-900">"{deleteModalItem.name}"</strong>?
+              </p>
+              {deleteModalItem.type === 'folder' && (
+                <p className="text-xs text-red-500 font-semibold mt-2">Esta acción eliminará también todos los archivos dentro de la carpeta.</p>
+              )}
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-100 bg-red-50/30 flex justify-end gap-3">
+              <button
+                onClick={() => setDeleteModalItem(null)}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-100 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={submitDeleteModalItem}
+                disabled={deleteLoading}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-white bg-red-600 hover:bg-red-700 transition-colors shadow-md shadow-red-100 disabled:opacity-50"
+              >
+                {deleteLoading ? 'Eliminando...' : 'Eliminar'}
               </button>
             </div>
           </div>

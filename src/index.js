@@ -686,10 +686,10 @@ async function generateAndStoreQuiz(docId, text) {
 }
 
 
-app.put('/api/documents/:id', requireAuth, async (req, res) => {
+app.put('/api/documents/:id', requireAuth, upload.single('file'), async (req, res) => {
+  const tmpPath = req.file?.path;
   try {
-    const { name } = req.body;
-    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'Nombre inválido' });
+    const { name, embed_code } = req.body;
 
     const doc = await db.getDocumentById(Number(req.params.id));
     if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
@@ -701,11 +701,40 @@ app.put('/api/documents/:id', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
     }
 
-    const updated = await db.renameDocument(doc.id, name);
+    const updates = {};
+    if (name) updates.name = name;
+
+    // Si es un archivo y subieron uno nuevo
+    if (req.file && ['pdf', 'docx', 'txt'].includes(doc.type)) {
+      const type = detectType(req.file.originalname);
+      if (!type) return res.status(400).json({ error: 'Formato no soportado' });
+      
+      const { rawText, chunks } = await ingestFile(tmpPath, type);
+      await db.deleteChunksByDocument(doc.id);
+      
+      updates.content_url = req.file.originalname;
+      updates.transcription = rawText;
+      updates.chunk_count = chunks.length;
+
+      // Generar embeddings en background
+      embedAndStore(doc.id, chunks).catch(err => console.error('[ingest:update:embed]', err));
+    }
+
+    // Si es un video y se actualizó el iframe
+    if (doc.type === 'video' && embed_code) {
+      updates.content_url = embed_code;
+    }
+
+    const updated = await db.updateDocumentData(doc.id, updates);
     res.json({ document: updated });
   } catch (err) {
-    console.error('[documents:rename]', err);
+    console.error('[documents:update]', err);
     res.status(500).json({ error: err.message });
+  } finally {
+    if (tmpPath) {
+      const fs = require('fs');
+      fs.unlink(tmpPath, () => {});
+    }
   }
 });
 

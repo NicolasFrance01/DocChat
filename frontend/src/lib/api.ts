@@ -276,6 +276,32 @@ export async function renameDocument(id: number, name: string) {
   });
 }
 
+export async function updateDocumentWithFile(id: number, name: string, file?: File | null, embedCode?: string) {
+  return new Promise<{ document: Document }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const t = token();
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        const body = JSON.parse(xhr.responseText ?? '{}');
+        reject(new Error(body.error ?? `HTTP ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Error de red'));
+
+    const form = new FormData();
+    form.append('name', name);
+    if (file) form.append('file', file);
+    if (embedCode) form.append('embed_code', embedCode);
+
+    xhr.open('PUT', `/api/documents/${id}`);
+    if (t) xhr.setRequestHeader('X-Session-Token', t);
+    xhr.send(form);
+  });
+}
+
 // ─── Folders ──────────────────────────────────────────────────────────────────
 
 export interface Folder {
@@ -465,7 +491,7 @@ export interface UserAdmin { id: number; username: string; role: string; full_na
 export interface Activity { id: number; user_id: number | null; username: string; action: string; notebook_id: number | null; notebook_name: string | null; document_id: number | null; document_name: string | null; details: string | null; created_at: string; }
 export interface NotebookUser { user_id: number; role: string; username: string; full_name: string | null; }
 export interface Notebook { id: number; user_id: number; name: string; description: string | null; document_count: number; created_at: string; ai_assistant_enabled?: boolean; document_order?: number[]; }
-export interface Document { id: number; notebook_id: number; folder_id: number | null; name: string; type: string; source: string | null; chunk_count: number; sort_order: number; created_at: string; }
+export interface Document { id: number; notebook_id: number; folder_id: number | null; name: string; type: string; source: string | null; chunk_count: number; sort_order: number; created_at: string; content_url?: string; transcription?: string; }
 export interface DocumentText extends Document { raw_text: string | null; }
 export interface Conversation { id: number; notebook_id: number; title: string | null; message_count: number; created_at: string; }
 export interface Message { id: number; conversation_id: number; role: 'user' | 'assistant'; content: string; sources: Source[] | null; parent_id: number | null; created_at: string; }
