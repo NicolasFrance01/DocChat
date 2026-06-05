@@ -200,12 +200,13 @@ export default function NotebookPage() {
   }
 
   async function handleToggleFolderQuiz(folderId: number) {
-    const folder = folders.find(f => f.id === folderId);
+    const folder = folders.find(f => f.id === folderId) || stagedFolders.find(f => f.id === folderId);
     if (!folder) return;
     const nextVal = !folder.quiz_enabled;
     try {
       await updateFolderQuizSettings(notebookId, folderId, nextVal);
       setFolders(prev => prev.map(f => f.id === folderId ? { ...f, quiz_enabled: nextVal } : f));
+      setStagedFolders(prev => prev.map(f => f.id === folderId ? { ...f, quiz_enabled: nextVal } : f));
     } catch (err: any) {
       alert(err.message || 'Error al actualizar settings de quiz para la carpeta');
     }
@@ -3082,6 +3083,59 @@ export default function NotebookPage() {
           </div>
         </div>
       )}
+      {/* ─── CREATE TREE VIDEO MODAL ──────────────────────────────────────────────── */}
+      {showTreeVideoModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl w-full max-w-sm flex flex-col shadow-2xl border border-gray-100 overflow-hidden animate-slide-up">
+            
+            {/* Modal Header */}
+            <div className="px-6 py-4.5 border-b border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">🎥</span>
+                <h3 className="font-bold text-gray-900 text-lg">Añadir Video</h3>
+              </div>
+              <button onClick={() => { setShowTreeVideoModal(false); setTreeVideoName(''); setTreeVideoCode(''); }} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form onSubmit={handleIngestTreeVideo} className="p-6 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-gray-700">Nombre del Video</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={treeVideoName}
+                  onChange={(e) => setTreeVideoName(e.target.value)}
+                  placeholder="Ej: Clase 1 - Introducción"
+                  className="w-full border border-gray-300 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-gray-700">Código iframe o Embed URL</label>
+                <input
+                  type="text"
+                  value={treeVideoCode}
+                  onChange={(e) => setTreeVideoCode(e.target.value)}
+                  placeholder="<iframe src='...'></iframe>"
+                  className="w-full border border-gray-300 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={treeVideoLoading || !treeVideoName.trim() || !treeVideoCode.trim()}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-extrabold rounded-xl py-3 transition-all shadow-md shadow-indigo-100"
+              >
+                {treeVideoLoading ? 'Añadiendo...' : 'Añadir Video'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* ─── CREATE FOLDER MODAL ──────────────────────────────────────────────── */}
       {showFolderModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">

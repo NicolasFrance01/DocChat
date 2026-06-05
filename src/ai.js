@@ -207,7 +207,7 @@ module.exports = {
 
 async function generateQuizForDocument(text) {
   try {
-    const prompt = `Genera un cuestionario de exactamente 3 preguntas de opción múltiple (con opciones A, B, C, D) en base al siguiente contenido.
+    const prompt = `Genera un cuestionario de exactamente 5 preguntas de opción múltiple (con opciones A, B, C, D) en base al siguiente contenido.
 El cuestionario debe centrarse en los conceptos clave del texto y sus detalles de aprendizaje.
 Debes responder ÚNICAMENTE con un array JSON válido, sin texto adicional antes o después del JSON (sin bloques de código markdown, solo el JSON puro).
 El JSON debe seguir esta estructura exacta:
@@ -241,7 +241,7 @@ ${text.slice(0, 25000)}
 
     try {
       const quiz = JSON.parse(content);
-      if (Array.isArray(quiz) && quiz.length === 3) {
+      if (Array.isArray(quiz) && quiz.length >= 3 && quiz.length <= 5) {
         return quiz;
       }
     } catch (e) {
@@ -250,7 +250,7 @@ ${text.slice(0, 25000)}
       const match = content.match(/\[\s*\{[\s\S]*\}\s*\]/);
       if (match) {
         const cleanedQuiz = JSON.parse(match[0]);
-        if (Array.isArray(cleanedQuiz) && cleanedQuiz.length === 3) return cleanedQuiz;
+        if (Array.isArray(cleanedQuiz) && cleanedQuiz.length >= 3 && cleanedQuiz.length <= 5) return cleanedQuiz;
       }
     }
   } catch (err) {
@@ -292,16 +292,37 @@ ${text.slice(0, 25000)}
       ],
       correct: "A",
       explanation: "El autor recalca la importancia del entendimiento profundo y la autoevaluación del material provisto."
+    },
+    {
+      question: "¿Qué papel juega el contexto proporcionado en el documento?",
+      options: [
+        "A) Ayuda a situar los conceptos teóricos en escenarios de aplicación práctica.",
+        "B) Es un simple relleno sin conexión con los objetivos del curso.",
+        "C) Solo es relevante para los creadores del curso, no para los estudiantes.",
+        "D) Confunde el verdadero propósito del contenido expuesto."
+      ],
+      correct: "A",
+      explanation: "El contexto es clave para que los conceptos teóricos puedan ser comprendidos en un marco de aplicación práctica."
+    },
+    {
+      question: "¿Cuál es el siguiente paso lógico tras comprender esta sección?",
+      options: [
+        "A) Aplicar los conocimientos en los cuestionarios y temas siguientes.",
+        "B) Omitir las siguientes unidades porque ya se abarcó lo más importante.",
+        "C) Borrar los apuntes ya que no se evaluarán de nuevo.",
+        "D) Ignorar el material adicional proporcionado por el instructor."
+      ],
+      correct: "A",
+      explanation: "El aprendizaje es acumulativo y se espera aplicar estos conocimientos en los pasos posteriores del curso."
     }
   ];
 }
 
 async function generateFinalExam(documentsArray) {
   try {
-    // Combine titles and brief segments of text from documents
     const summaryText = documentsArray.map((d, i) => `Documento ${i+1}: ${d.name}\nResumen del contenido:\n${d.raw_text.slice(0, 4000)}`).join('\n\n');
 
-    const prompt = `Genera un examen final integrador de exactamente 5 preguntas de opción múltiple (con opciones A, B, C, D) en base a todos los documentos del curso provistos a continuación.
+    const prompt = `Genera un examen final integrador de entre 10 y 15 preguntas de opción múltiple (con opciones A, B, C, D) en base a todos los documentos del curso provistos a continuación.
 El examen debe evaluar la comprensión general de todo el notebook y ser integrador.
 Debes responder ÚNICAMENTE con un array JSON válido, sin texto adicional antes o después del JSON (sin bloques de código markdown, solo el JSON puro).
 El JSON debe seguir esta estructura exacta:
@@ -334,7 +355,7 @@ ${summaryText}
 
     try {
       const exam = JSON.parse(content);
-      if (Array.isArray(exam) && exam.length === 5) {
+      if (Array.isArray(exam) && exam.length >= 5) {
         return exam;
       }
     } catch (e) {
@@ -342,7 +363,7 @@ ${summaryText}
       const match = content.match(/\[\s*\{[\s\S]*\}\s*\]/);
       if (match) {
         const cleanedExam = JSON.parse(match[0]);
-        if (Array.isArray(cleanedExam) && cleanedExam.length === 5) return cleanedExam;
+        if (Array.isArray(cleanedExam) && cleanedExam.length >= 5) return cleanedExam;
       }
     }
   } catch (err) {
@@ -406,6 +427,61 @@ ${summaryText}
       ],
       correct: "A",
       explanation: "La revisión del material nativo y el análisis de la retroalimentación de las evaluaciones consolidan el aprendizaje."
+    },
+    {
+      question: "¿Qué estrategia se aplica típicamente para evaluar si los conceptos se integraron correctamente?",
+      options: [
+        "A) El uso de evaluaciones integradoras que conectan diferentes documentos.",
+        "B) La lectura rápida sin prestar atención a los detalles.",
+        "C) Saltarse los temas más largos.",
+        "D) Completar los exámenes sin haber leído previamente los textos."
+      ],
+      correct: "A",
+      explanation: "Las evaluaciones integradoras son clave para confirmar que los conceptos de distintos documentos han sido asimilados y relacionados."
+    },
+    {
+      question: "¿Por qué es importante mantener una secuencia pedagógica sugerida al estudiar múltiples documentos?",
+      options: [
+        "A) Porque permite construir conocimientos complejos a partir de nociones básicas previas.",
+        "B) Porque es la única manera técnica en que el servidor puede cargar los archivos.",
+        "C) No es importante, se puede leer en cualquier orden sin consecuencias.",
+        "D) Porque de otra manera el sistema borrará el progreso del usuario."
+      ],
+      correct: "A",
+      explanation: "Una secuencia lógica o sugerida por la IA ayuda a que los conocimientos nuevos se anclen en los ya aprendidos de forma escalonada."
+    },
+    {
+      question: "¿Cuál de estos elementos es esencial para considerar completado el proceso de aprendizaje en un módulo?",
+      options: [
+        "A) La aprobación de los cuestionarios asociados y la comprensión holística del tema.",
+        "B) Exclusivamente abrir el documento por un par de segundos.",
+        "C) Subir más documentos a la plataforma aunque no se lean.",
+        "D) Fallar todos los exámenes intencionalmente."
+      ],
+      correct: "A",
+      explanation: "La comprensión real se valida aprobando de forma satisfactoria las instancias de evaluación proporcionadas."
+    },
+    {
+      question: "Si encuentras una contradicción aparente entre dos documentos del curso, ¿qué enfoque deberías adoptar?",
+      options: [
+        "A) Analizar el contexto y la fecha o propósito de cada documento para integrarlos críticamente.",
+        "B) Descartar ambos documentos inmediatamente.",
+        "C) Elegir el más corto y basar todo el estudio solo en ese.",
+        "D) Asumir que toda la plataforma es incorrecta."
+      ],
+      correct: "A",
+      explanation: "El pensamiento crítico y la contextualización son habilidades fundamentales frente a múltiples fuentes de información."
+    },
+    {
+      question: "El concepto de 'aprendizaje iterativo' en el uso de esta herramienta se refiere principalmente a:",
+      options: [
+        "A) Volver a revisar documentos y respuestas para afianzar el conocimiento tras cada evaluación.",
+        "B) Realizar intentos ciegos y aleatorios en los exámenes.",
+        "C) Evitar repasar las explicaciones de las respuestas incorrectas.",
+        "D) Copiar las respuestas de los cuestionarios de otros estudiantes."
+      ],
+      correct: "A",
+      explanation: "Iterar sobre los errores y las retroalimentaciones es la esencia de usar los cuestionarios de aprendizaje."
     }
   ];
 }
