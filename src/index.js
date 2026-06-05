@@ -1229,6 +1229,15 @@ app.post('/api/documents/:id/read', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/api/documents/:id/quiz/submit', requireAuth, async (req, res) => {
+  try {
+    const docId = Number(req.params.id);
+    const { answers } = req.body;
+    const doc = await db.getDocumentById(docId);
+    if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
+
+    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
 
     const quiz = await db.getQuizByDocument(docId);
     if (!quiz) return res.status(404).json({ error: 'Cuestionario no encontrado' });
