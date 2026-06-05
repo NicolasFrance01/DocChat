@@ -360,6 +360,30 @@ app.post('/api/notebooks/:id/folders', requireAuth, async (req, res) => {
 });
 
 // DELETE folder
+app.put('/api/folders/:id', requireAuth, async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'Nombre inválido' });
+
+    const folderId = Number(req.params.id);
+    const folder = await db.getFolderById(folderId);
+    if (!folder) return res.status(404).json({ error: 'Carpeta no encontrada' });
+
+    const notebook = await db.getNotebookById(folder.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    const updated = await db.renameFolder(folderId, name);
+    res.json({ folder: updated });
+  } catch (err) {
+    console.error('[folders:rename]', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 app.delete('/api/folders/:id', requireAuth, async (req, res) => {
   try {
     const folderId = Number(req.params.id);
@@ -661,6 +685,29 @@ async function generateAndStoreQuiz(docId, text) {
   console.log(`[ingest] Quiz autogenerado y guardado para documento ${docId}`);
 }
 
+
+app.put('/api/documents/:id', requireAuth, async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'Nombre inválido' });
+
+    const doc = await db.getDocumentById(Number(req.params.id));
+    if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
+    
+    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    const updated = await db.renameDocument(doc.id, name);
+    res.json({ document: updated });
+  } catch (err) {
+    console.error('[documents:rename]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.delete('/api/documents/:id', requireAuth, async (req, res) => {
   try {

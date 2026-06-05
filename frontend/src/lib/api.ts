@@ -269,6 +269,13 @@ export async function deleteDocument(id: number) {
   return request(`/api/documents/${id}`, { method: 'DELETE' });
 }
 
+export async function renameDocument(id: number, name: string) {
+  return request<{ document: Document }>(`/api/documents/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name }),
+  });
+}
+
 // ─── Folders ──────────────────────────────────────────────────────────────────
 
 export interface Folder {
@@ -301,6 +308,13 @@ export async function createFolder(notebookId: number, name: string, parentId: n
 
 export async function deleteFolder(id: number) {
   return request(`/api/folders/${id}`, { method: 'DELETE' });
+}
+
+export async function renameFolder(id: number, name: string) {
+  return request<{ folder: Folder }>(`/api/folders/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name }),
+  });
 }
 
 export async function moveDocument(id: number, folderId: number | null) {

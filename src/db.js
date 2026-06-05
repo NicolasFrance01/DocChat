@@ -325,6 +325,11 @@ async function deleteDocument(id) {
   return rowCount > 0;
 }
 
+async function renameDocument(id, newName) {
+  const { rows } = await pool.query('UPDATE documents SET name = $1 WHERE id = $2 RETURNING *', [newName, id]);
+  return rows[0] || null;
+}
+
 // ─── Document chunks ──────────────────────────────────────────────────────────
 
 async function insertChunks(chunks) {
@@ -464,6 +469,11 @@ async function createFolder(notebookId, name, parentId = null) {
 async function deleteFolder(id) {
   const { rowCount } = await pool.query('DELETE FROM folders WHERE id = $1', [id]);
   return rowCount > 0;
+}
+
+async function renameFolder(id, newName) {
+  const { rows } = await pool.query('UPDATE folders SET name = $1 WHERE id = $2 RETURNING *', [newName, id]);
+  return rows[0] || null;
 }
 
 async function moveDocumentToFolder(docId, folderId) {
@@ -639,6 +649,7 @@ module.exports = {
   getFolderById,
   createFolder,
   deleteFolder,
+  renameFolder,
   moveDocumentToFolder,
   moveFolderToParent,
   getFolderPath,
@@ -648,6 +659,7 @@ module.exports = {
   createDocument,
   updateDocumentChunkCount,
   deleteDocument,
+  renameDocument,
   // chunks
   insertChunks,
   searchChunks,

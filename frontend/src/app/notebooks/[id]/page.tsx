@@ -2,12 +2,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  getDocuments, getDocument, uploadDocument, ingestUrl, ingestVideo, updateVideoTranscription, uploadVideoTranscriptionFile, deleteDocument,
+  getDocuments, getDocument, uploadDocument, ingestUrl, ingestVideo, updateVideoTranscription, uploadVideoTranscriptionFile, deleteDocument, renameDocument,
   getConversations, getMessages, sendChat,
   searchUsers, getNotebookUsers, addNotebookUser, removeNotebookUser, createInvitation, changePassword,
   getNotebookProgress, markDocumentRead, getFolderQuiz, submitFolderQuiz, getFinalExam, submitFinalExam,
   reorderNotebookDocuments, suggestOptimalOrder,
-  getFolders, createFolder, deleteFolder, moveDocument, moveFolder, reorderTree, updateFolderQuizSettings,
+  getFolders, createFolder, deleteFolder, renameFolder, moveDocument, moveFolder, reorderTree, updateFolderQuizSettings,
   type Document, type Message, type Source, type User, type NotebookUser, type Conversation,
   type DocumentProgress, type QuizQuestion, type Folder, type QuizAttempt, getAttempts
 } from '@/lib/api';
@@ -228,6 +228,48 @@ export default function NotebookPage() {
       setMovingFolderId(null);
     } catch (err: any) {
       alert(err.message || 'Error al mover carpeta');
+    }
+  }
+
+  async function handleRenameModalItem(id: number, type: 'document' | 'folder', currentName: string) {
+    const newName = window.prompt(`Renombrar ${type === 'folder' ? 'carpeta' : 'documento'}:`, currentName);
+    if (!newName || newName.trim() === currentName) return;
+    try {
+      if (type === 'folder') {
+        const res = await renameFolder(id, newName.trim());
+        setFolders(prev => prev.map(f => f.id === id ? { ...f, name: res.folder.name } : f));
+        setStagedFolders(prev => prev.map(f => f.id === id ? { ...f, name: res.folder.name } : f));
+      } else {
+        const res = await renameDocument(id, newName.trim());
+        setDocs(prev => prev.map(d => d.id === id ? { ...d, name: res.document.name } : d));
+        setStagedDocs(prev => prev.map(d => d.id === id ? { ...d, name: res.document.name } : d));
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error al renombrar');
+    }
+  }
+
+  async function handleDeleteModalItem(id: number, type: 'document' | 'folder') {
+    if (!window.confirm(`¿Seguro que deseas eliminar este ${type === 'folder' ? 'carpeta' : 'documento'}?`)) return;
+    try {
+      if (type === 'folder') {
+        await deleteFolder(id);
+        setFolders(prev => prev.filter(f => f.id !== id));
+        setStagedFolders(prev => prev.filter(f => f.id !== id));
+        if (currentFolderId === id) setCurrentFolderId(null);
+        if (modalFolderId === id) setModalFolderId(null);
+      } else {
+        await deleteDocument(id);
+        setDocs(prev => prev.filter(d => d.id !== id));
+        setStagedDocs(prev => prev.filter(d => d.id !== id));
+        setSelectedDocs(prev => {
+          const updated = { ...prev };
+          delete updated[id];
+          return updated;
+        });
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error al eliminar');
     }
   }
 
@@ -3035,7 +3077,25 @@ export default function NotebookPage() {
                               {item.quiz_enabled ? '📝 Quiz ON' : 'Quiz OFF'}
                             </button>
                           )}
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 ml-1">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleRenameModalItem(item.id, isFolder ? 'folder' : 'document', item.name); }}
+                              className="text-gray-400 hover:text-indigo-600 p-1 hover:bg-white rounded transition-colors text-sm"
+                              title="Renombrar"
+                            >
+                              ✏️
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleDeleteModalItem(item.id, isFolder ? 'folder' : 'document'); }}
+                              className="text-gray-400 hover:text-red-500 p-1 hover:bg-white rounded transition-colors text-sm"
+                              title="Eliminar"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-1.5 ml-1 border-l border-gray-200 pl-2">
                             <button
                               type="button"
                               disabled={index === 0 || reorderLoading || suggestingOrder}
