@@ -110,6 +110,10 @@ export default function NotebookPage() {
   const [modalFolderId, setModalFolderId] = useState<number | null>(null);
   const [stagedFolders, setStagedFolders] = useState<Folder[]>([]);
   const [stagedDocs, setStagedDocs] = useState<Document[]>([]);
+  const [showTreeVideoModal, setShowTreeVideoModal] = useState(false);
+  const [treeVideoName, setTreeVideoName] = useState('');
+  const [treeVideoCode, setTreeVideoCode] = useState('');
+  const [treeVideoLoading, setTreeVideoLoading] = useState(false);
   const [suggestingOrder, setSuggestingOrder] = useState(false);
   const [suggestedExplanation, setSuggestedExplanation] = useState('');
   const [reorderLoading, setReorderLoading] = useState(false);
@@ -434,6 +438,25 @@ export default function NotebookPage() {
       alert(err.message || 'Error al guardar el nuevo orden.');
     } finally {
       setReorderLoading(false);
+    }
+  }
+
+  async function handleIngestTreeVideo(e: React.FormEvent) {
+    e.preventDefault();
+    if (!treeVideoName.trim() || !treeVideoCode.trim()) return;
+    setTreeVideoLoading(true);
+    try {
+      const targetFolderId = modalFolderId;
+      const data = await ingestVideo(notebookId, treeVideoName.trim(), treeVideoCode.trim(), targetFolderId);
+      setDocs(prev => [data.document, ...prev]);
+      setStagedDocs(prev => [...prev, { ...data.document, sort_order: stagedDocs.length }]);
+      setTreeVideoName('');
+      setTreeVideoCode('');
+      setShowTreeVideoModal(false);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Error al ingestar video');
+    } finally {
+      setTreeVideoLoading(false);
     }
   }
 
@@ -2917,6 +2940,13 @@ export default function NotebookPage() {
                     className="bg-gray-100 hover:bg-gray-200 text-gray-700 font-extrabold text-[10px] px-3.5 py-2 rounded-xl transition-all shadow-sm flex items-center gap-1"
                   >
                     📁 Nueva Carpeta
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowTreeVideoModal(true)}
+                    className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-extrabold text-[10px] px-3.5 py-2 rounded-xl transition-all shadow-sm flex items-center gap-1"
+                  >
+                    🎥 Añadir Video
                   </button>
                   <button
                     type="button"
