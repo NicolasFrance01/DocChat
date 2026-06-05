@@ -227,6 +227,20 @@ export async function ingestUrl(notebookId: number, url: string) {
   });
 }
 
+export async function ingestVideo(notebookId: number, name: string, embedCode: string, folderId?: number | null) {
+  return request<{ document: Document }>(`/api/notebooks/${notebookId}/documents/video`, {
+    method: 'POST',
+    body: JSON.stringify({ name, embed_code: embedCode, folder_id: folderId }),
+  });
+}
+
+export async function updateVideoTranscription(docId: number, transcription: string) {
+  return request<{ ok: boolean }>(`/api/documents/${docId}/transcription`, {
+    method: 'POST',
+    body: JSON.stringify({ transcription }),
+  });
+}
+
 export async function deleteDocument(id: number) {
   return request(`/api/documents/${id}`, { method: 'DELETE' });
 }

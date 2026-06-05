@@ -589,6 +589,71 @@ app.post('/api/notebooks/:id/documents/text', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/api/notebooks/:id/documents/video', requireAuth, async (req, res) => {
+  try {
+    const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
+    if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    const { name, embed_code, folder_id } = req.body;
+    if (!name || !embed_code) return res.status(400).json({ error: 'Faltan campos: name, embed_code' });
+
+    const doc = await db.createDocument(notebook.id, name, 'video', embed_code, '', folder_id ? Number(folder_id) : null);
+    await db.logActivity(req.user.id, req.user.username, 'upload_document', notebook.id, notebook.name, doc.id, doc.name, `Video "${name}" añadido`);
+
+    // Actualizar orden de documentos del notebook
+    const currentOrder = notebook.document_order || [];
+    currentOrder.push(doc.id);
+    await db.updateNotebookDocumentOrder(notebook.id, currentOrder);
+
+    res.status(201).json({ document: doc });
+  } catch (err) {
+    console.error('[documents:video]', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'Error interno' });
+  }
+});
+
+app.post('/api/documents/:id/transcription', requireAuth, async (req, res) => {
+  try {
+    const docId = Number(req.params.id);
+    const { transcription } = req.body;
+    
+    const doc = await db.getDocumentById(docId);
+    if (!doc) return res.status(404).json({ error: 'Documento no encontrado' });
+
+    const notebook = await db.getNotebookById(doc.notebook_id, req.user.id, req.user.role);
+    if (!notebook) return res.status(403).json({ error: 'Sin permiso para acceder a este notebook' });
+
+    if (!await hasCreatorPermission(notebook, req.user)) {
+      return res.status(403).json({ error: 'No tienes permisos de edición en este notebook' });
+    }
+
+    // Update raw_text
+    await db.pool.query('UPDATE documents SET raw_text = $1 WHERE id = $2', [transcription, docId]);
+    await db.logActivity(req.user.id, req.user.username, 'update_document', notebook.id, notebook.name, doc.id, doc.name, `Transcripción actualizada para "${doc.name}"`);
+
+    // Borrar chunks viejos
+    await db.deleteChunksByDocument(docId);
+    
+    res.status(202).json({ ok: true, message: 'Procesando transcripción en segundo plano…' });
+
+    // Procesar embeddings de la nueva transcripción
+    if (transcription && transcription.trim()) {
+      const { chunkText } = require('./ingest');
+      const chunks = chunkText(transcription);
+      embedAndStore(docId, chunks).catch(err => console.error('[transcription:embed]', err));
+    } else {
+      await db.updateDocumentChunkCount(docId, 0);
+    }
+  } catch (err) {
+    console.error('[documents:transcription]', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'Error interno' });
+  }
+});
+
 async function generateAndStoreQuiz(docId, text) {
   const { generateQuizForDocument } = require('./ai');
   const questions = await generateQuizForDocument(text);

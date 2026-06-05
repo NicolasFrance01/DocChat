@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  getDocuments, getDocument, uploadDocument, ingestUrl, deleteDocument,
+  getDocuments, getDocument, uploadDocument, ingestUrl, ingestVideo, updateVideoTranscription, deleteDocument,
   getConversations, getMessages, sendChat,
   searchUsers, getNotebookUsers, addNotebookUser, removeNotebookUser, createInvitation, changePassword,
   getNotebookProgress, markDocumentRead, getFolderQuiz, submitFolderQuiz, getFinalExam, submitFinalExam,
@@ -41,6 +41,9 @@ export default function NotebookPage() {
   const modalFileRef = useRef<HTMLInputElement>(null);
   const [urlInput, setUrlInput] = useState('');
   const [urlLoading, setUrlLoading] = useState(false);
+  const [videoName, setVideoName] = useState('');
+  const [videoCode, setVideoCode] = useState('');
+  const [videoLoading, setVideoLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Active Document Context Selection (Checkboxes)
@@ -84,6 +87,10 @@ export default function NotebookPage() {
   const [viewerPages, setViewerPages] = useState<{ pageNumber: number | null; text: string }[]>([]);
   const [viewerSearch, setViewerSearch] = useState('');
   const [viewerHighlightPage, setViewerHighlightPage] = useState<number | null>(null);
+  const [activeViewerTab, setActiveViewerTab] = useState<'content' | 'transcript'>('content');
+  const [editingTranscript, setEditingTranscript] = useState(false);
+  const [transcriptDraft, setTranscriptDraft] = useState('');
+  const [transcriptSaving, setTranscriptSaving] = useState(false);
 
   // Citation Detail Modal
   const [activeCitation, setActiveCitation] = useState<Source | null>(null);
@@ -606,6 +613,8 @@ export default function NotebookPage() {
     setViewerPages([]);
     setViewerSearch('');
     setViewerHighlightPage(null);
+    setActiveViewerTab('content');
+    setEditingTranscript(false);
     try {
       const res = await getDocument(doc.id);
       const rawText = res.document.raw_text || 'Documento sin texto extraído.';
@@ -644,6 +653,22 @@ export default function NotebookPage() {
       setViewerDoc(null);
     } finally {
       setViewerLoading(false);
+    }
+  }
+
+  async function handleSaveTranscript() {
+    if (!viewerDoc) return;
+    setTranscriptSaving(true);
+    try {
+      await updateVideoTranscription(viewerDoc.id, transcriptDraft);
+      setViewerText(transcriptDraft);
+      setEditingTranscript(false);
+      // Actualizamos el chunk count localmente para simular que se va a procesar
+      setDocs(prev => prev.map(d => d.id === viewerDoc.id ? { ...d, chunk_count: 1 } : d));
+    } catch (err: any) {
+      alert(err.message || 'Error al guardar la transcripción');
+    } finally {
+      setTranscriptSaving(false);
     }
   }
 
@@ -881,6 +906,25 @@ export default function NotebookPage() {
       alert(err instanceof Error ? err.message : 'Error al ingestar URL');
     } finally {
       setUrlLoading(false);
+    }
+  }
+
+  // ── Ingest Video (Embed) ──────────────────────────────────────────────────────
+  async function handleVideoIngest(e: React.FormEvent) {
+    e.preventDefault();
+    if (!videoName.trim() || !videoCode.trim()) return;
+    setVideoLoading(true);
+    try {
+      const data = await ingestVideo(notebookId, videoName.trim(), videoCode.trim(), currentFolderId);
+      setDocs(prev => [data.document, ...prev]);
+      setSelectedDocs(prev => ({ ...prev, [data.document.id]: true }));
+      setVideoName('');
+      setVideoCode('');
+      loadDocs();
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Error al ingestar video');
+    } finally {
+      setVideoLoading(false);
     }
   }
 
@@ -1138,7 +1182,7 @@ export default function NotebookPage() {
     );
   }
 
-  const typeIcon: Record<string, string> = { pdf: '📄', docx: '📝', txt: '📃', url: '🔗' };
+  const typeIcon: Record<string, string> = { pdf: '📄', docx: '📝', txt: '📃', url: '🔗', video: '🎥' };
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 text-gray-800 font-sans overflow-hidden">
@@ -1247,6 +1291,33 @@ export default function NotebookPage() {
                 >
                   {urlLoading ? '...' : 'URL'}
                 </button>
+              </form>
+
+              {/* Video ingest */}
+              <form onSubmit={handleVideoIngest} className="flex flex-col gap-1.5 mt-2">
+                <input
+                  type="text"
+                  value={videoName}
+                  onChange={e => setVideoName(e.target.value)}
+                  placeholder="Nombre del Video"
+                  className="w-full border border-gray-300 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                />
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={videoCode}
+                    onChange={e => setVideoCode(e.target.value)}
+                    placeholder="Código iframe o Embed URL"
+                    className="flex-1 border border-gray-300 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                  />
+                  <button
+                    type="submit"
+                    disabled={videoLoading}
+                    className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition-all shadow-sm"
+                  >
+                    {videoLoading ? '...' : 'Embed'}
+                  </button>
+                </div>
               </form>
               {aiAssistantEnabled && docs.length > 0 && (
                 <button
@@ -1861,16 +1932,36 @@ export default function NotebookPage() {
               </div>
             </div>
 
+            {/* Viewer Tabs for Video */}
+            {viewerDoc?.type === 'video' && (
+              <div className="flex border-b border-gray-100 bg-white select-none">
+                <button 
+                  onClick={() => setActiveViewerTab('content')}
+                  className={`flex-1 py-2 text-xs font-bold transition-colors ${activeViewerTab === 'content' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-400 hover:text-gray-600'}`}
+                >
+                  🎥 Reproductor
+                </button>
+                <button 
+                  onClick={() => setActiveViewerTab('transcript')}
+                  className={`flex-1 py-2 text-xs font-bold transition-colors ${activeViewerTab === 'transcript' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-400 hover:text-gray-600'}`}
+                >
+                  📝 Transcripción
+                </button>
+              </div>
+            )}
+
             {/* Viewer Search Bar */}
-            <div className="p-3 border-b border-gray-100">
-              <input
-                type="text"
-                value={viewerSearch}
-                onChange={e => setViewerSearch(e.target.value)}
-                placeholder="Buscar términos en este documento..."
-                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
+            {viewerDoc?.type !== 'video' || activeViewerTab === 'transcript' ? (
+              <div className="p-3 border-b border-gray-100">
+                <input
+                  type="text"
+                  value={viewerSearch}
+                  onChange={e => setViewerSearch(e.target.value)}
+                  placeholder="Buscar términos en este documento..."
+                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            ) : null}
 
             {/* Viewer Content list */}
             <div className="flex-1 overflow-y-auto p-5 space-y-6 select-text bg-gray-50/10">
@@ -1879,6 +1970,49 @@ export default function NotebookPage() {
                   <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
                   <p className="text-xs text-gray-400 font-bold uppercase tracking-wider animate-pulse">Cargando Texto...</p>
                 </div>
+              ) : viewerDoc.type === 'video' ? (
+                activeViewerTab === 'content' ? (
+                  <div className="w-full h-full flex flex-col gap-4">
+                    <div 
+                      className="w-full aspect-video rounded-xl overflow-hidden shadow-lg bg-black flex items-center justify-center [&>iframe]:w-full [&>iframe]:h-full" 
+                      dangerouslySetInnerHTML={{ __html: viewerDoc.source || '' }} 
+                    />
+                  </div>
+                ) : (
+                  <div className="w-full flex flex-col gap-3 h-full">
+                    <div className="flex justify-between items-center select-none">
+                      <p className="text-xs text-gray-500 font-bold">Transcripción del Video</p>
+                      {me?.role !== 'user' && !editingTranscript && (
+                        <button 
+                          onClick={() => { setTranscriptDraft(viewerText); setEditingTranscript(true); }}
+                          className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded transition-colors"
+                        >
+                          ✏️ Editar Transcripción
+                        </button>
+                      )}
+                    </div>
+                    {editingTranscript ? (
+                      <div className="flex flex-col h-full gap-2">
+                        <textarea
+                          value={transcriptDraft}
+                          onChange={e => setTranscriptDraft(e.target.value)}
+                          className="flex-1 w-full border border-gray-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none font-sans"
+                          placeholder="Pegá la transcripción acá para que la IA la procese..."
+                        />
+                        <div className="flex justify-end gap-2 shrink-0">
+                          <button onClick={() => setEditingTranscript(false)} className="text-xs font-bold text-gray-500 hover:text-gray-700 px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200">Cancelar</button>
+                          <button onClick={handleSaveTranscript} disabled={transcriptSaving} className="text-xs font-bold text-white px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
+                            {transcriptSaving ? 'Guardando...' : 'Guardar y Procesar'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-4 border border-gray-200 rounded-xl bg-white shadow-sm flex-1 overflow-y-auto whitespace-pre-wrap text-sm text-gray-700 leading-relaxed font-serif">
+                        {viewerText ? renderViewerPageContent(viewerText, viewerSearch) : <span className="text-gray-400 italic">No hay transcripción disponible. Podés editar para agregarla.</span>}
+                      </div>
+                    )}
+                  </div>
+                )
               ) : (
                 viewerPages.map((page, i) => (
                   <div
