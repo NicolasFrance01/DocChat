@@ -1127,6 +1127,8 @@ export default function NotebookPage() {
     if (!textInput) setInput('');
     setSources([]);
 
+    let activeConvId = conversationId;
+
     // Document Context IDs Filter
     const activeDocIds = Object.keys(selectedDocs)
       .map(Number)
@@ -1138,7 +1140,7 @@ export default function NotebookPage() {
     const clientUserMsgId = Date.now();
     const userMsg: Message = {
       id: clientUserMsgId,
-      conversation_id: conversationId ?? 0,
+      conversation_id: activeConvId ?? 0,
       role: 'user',
       content: text,
       parent_id: activeParentId,
@@ -1151,9 +1153,11 @@ export default function NotebookPage() {
     setStreaming(true);
     setStreamBuffer('');
 
-    await sendChat(notebookId, text, conversationId, activeParentId, activeDocIds.length > 0 ? activeDocIds : null, {
+    await sendChat(notebookId, text, activeConvId, activeParentId, activeDocIds.length > 0 ? activeDocIds : null, {
       onMeta: (cid) => {
         setConversationId(cid);
+        activeConvId = cid;
+        localStorage.setItem('docchat_active_conv', cid.toString());
         // Refresh conversations list in background
         loadConvs();
       },
@@ -1164,7 +1168,7 @@ export default function NotebookPage() {
           // Create assistant message node
           const assistantMsg: Message = {
             id: Date.now() + 1,
-            conversation_id: conversationId ?? 0,
+            conversation_id: activeConvId ?? 0,
             role: 'assistant',
             content: prev,
             parent_id: clientUserMsgId, // child of the optimistic user message ID
@@ -1173,15 +1177,15 @@ export default function NotebookPage() {
           };
           
           // Re-fetch complete dialogue nodes from backend to sync up perfectly (keeps IDs matching exactly!)
-          if (conversationId) {
-            getMessages(conversationId).then(data => {
+          if (activeConvId) {
+            getMessages(activeConvId).then(data => {
               setAllMessages(data.messages);
             });
           } else {
             // First exchange: let's do a hard fetch in a second to sync conversationId
             setTimeout(() => {
-              const activeConvId = localStorage.getItem('docchat_active_conv');
-              const realId = activeConvId ? Number(activeConvId) : null;
+              const activeLocalConvId = localStorage.getItem('docchat_active_conv');
+              const realId = activeLocalConvId ? Number(activeLocalConvId) : null;
               if (realId) {
                 getMessages(realId).then(data => {
                   setAllMessages(data.messages);
@@ -1196,8 +1200,8 @@ export default function NotebookPage() {
         });
         
         // Cache conversationId so async first exchange resolves it
-        if (conversationId) {
-          localStorage.setItem('docchat_active_conv', conversationId.toString());
+        if (activeConvId) {
+          localStorage.setItem('docchat_active_conv', activeConvId.toString());
         }
 
         setStreaming(false);
@@ -1206,7 +1210,7 @@ export default function NotebookPage() {
         setStreamBuffer('');
         setAllMessages(m => [...m, {
           id: Date.now() + 2,
-          conversation_id: conversationId ?? 0,
+          conversation_id: activeConvId ?? 0,
           role: 'assistant',
           content: `Error: ${msg}`,
           parent_id: clientUserMsgId,

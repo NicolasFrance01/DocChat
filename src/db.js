@@ -588,6 +588,14 @@ async function getUserFolderProgress(userId, folderId) {
   return rows[0] || null;
 }
 
+async function getAllFolderProgressForUser(userId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM user_folder_progress WHERE user_id = $1',
+    [userId]
+  );
+  return rows;
+}
+
 async function saveUserFolderProgress(userId, folderId, quizPassed, score) {
   const { rows } = await pool.query(
     `INSERT INTO user_folder_progress (user_id, folder_id, quiz_passed, score, completed_at)
@@ -637,6 +645,7 @@ module.exports = {
   saveQuizForFolder,
   getQuizForFolder,
   getUserFolderProgress,
+  getAllFolderProgressForUser,
   saveUserFolderProgress,
   saveQuizAttempt,
   getQuizAttempts,

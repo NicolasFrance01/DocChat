@@ -1116,7 +1116,7 @@ app.post('/api/notebooks/:id/chat', requireAuth, async (req, res) => {
     let finalSources = [];
 
     const progress = await db.getNotebookProgress(notebook.id, req.user.id);
-    const folderProgressList = await db.getFolderProgressForUser(req.user.id);
+    const folderProgressList = await db.getAllFolderProgressForUser(req.user.id);
     // filter folder progress for this notebook's folders
     const documents = await db.getDocumentsByNotebook(notebook.id);
     const folders = await db.getFoldersByNotebook(notebook.id);
