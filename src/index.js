@@ -1277,15 +1277,15 @@ app.get('/api/notebooks/:id/attempts', requireAuth, async (req, res) => {
     const notebook = await db.getNotebookById(notebookId, req.user.id, req.user.role);
     if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
 
-    if (req.user.role !== 'admin' && req.user.id !== notebook.created_by) {
+    if (req.user.role !== 'admin' && req.user.id !== notebook.user_id) {
       return res.status(403).json({ error: 'Sin permiso para ver intentos de este notebook' });
     }
 
     const { rows } = await db.pool.query(`
-      SELECT qa.id, qa.user_id, u.full_name, u.username, qa.quiz_type, qa.target_id, qa.score, qa.passed, qa.created_at, qa.details, f.name as folder_name
+      SELECT qa.id, qa.user_id, u.full_name, u.username, qa.entity_type as quiz_type, qa.entity_id as target_id, qa.score, qa.passed, qa.created_at, qa.selected_answers as details, f.name as folder_name
       FROM quiz_attempts qa
       JOIN users u ON qa.user_id = u.id
-      LEFT JOIN folders f ON qa.quiz_type = 'folder' AND qa.target_id = f.id
+      LEFT JOIN folders f ON qa.entity_type = 'folder' AND qa.entity_id = f.id
       WHERE qa.notebook_id = $1
       ORDER BY qa.created_at DESC
     `, [notebookId]);

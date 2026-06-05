@@ -93,6 +93,7 @@ export default function NotebookPage() {
   const [transcriptSaving, setTranscriptSaving] = useState(false);
   const transcriptFileRef = useRef<HTMLInputElement>(null);
   const [transcriptUploading, setTranscriptUploading] = useState(false);
+  const [chatWidth, setChatWidth] = useState(450);
 
   // Citation Detail Modal
   const [activeCitation, setActiveCitation] = useState<Source | null>(null);
@@ -1654,8 +1655,254 @@ export default function NotebookPage() {
           </div>
         </aside>
 
-        {/* ── Center: Chat Dialogue ─────────────────────────────────────────── */}
-        <main className="flex-1 flex flex-col overflow-hidden bg-white z-0">
+        {/* ── Right Panel: Document Viewer (SlideDrawer) ─────────────────────── */}
+        {viewerDoc && (
+          <main className="flex-1 bg-white border-l border-gray-200 flex flex-col relative select-text h-full z-10 overflow-hidden">
+            
+            {/* Viewer Header */}
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+              <div className="min-w-0">
+                <h3 className="font-bold text-gray-900 truncate text-sm sm:text-base" title={viewerDoc.name}>
+                  👁️ Visor: {viewerDoc.name}
+                </h3>
+                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Modo lectura integrada</p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {viewerDoc.source && viewerDoc.source.startsWith('http') && (
+                  <button
+                    onClick={() => window.open(viewerDoc.source || '', '_blank')}
+                    className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 select-none"
+                    title="Abrir el archivo original en una pestaña nueva"
+                  >
+                    <span>📄 Abrir original</span>
+                  </button>
+                )}
+                <button onClick={() => setViewerDoc(null)} className="text-gray-400 hover:text-gray-600 transition-colors p-1">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Viewer Tabs for Video */}
+            {viewerDoc?.type === 'video' && (
+              <div className="flex border-b border-gray-100 bg-white select-none">
+                <button 
+                  onClick={() => setActiveViewerTab('content')}
+                  className={`flex-1 py-2 text-xs font-bold transition-colors ${activeViewerTab === 'content' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-400 hover:text-gray-600'}`}
+                >
+                  🎥 Reproductor
+                </button>
+                <button 
+                  onClick={() => setActiveViewerTab('transcript')}
+                  className={`flex-1 py-2 text-xs font-bold transition-colors ${activeViewerTab === 'transcript' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-400 hover:text-gray-600'}`}
+                >
+                  📝 Transcripción
+                </button>
+              </div>
+            )}
+
+            {/* Viewer Search Bar */}
+            {viewerDoc?.type !== 'video' || activeViewerTab === 'transcript' ? (
+              <div className="p-3 border-b border-gray-100">
+                <input
+                  type="text"
+                  value={viewerSearch}
+                  onChange={e => setViewerSearch(e.target.value)}
+                  placeholder="Buscar términos en este documento..."
+                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            ) : null}
+
+            {/* Viewer Content list */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-6 select-text bg-gray-50/10">
+              {viewerLoading ? (
+                <div className="flex flex-col items-center justify-center h-full space-y-3 select-none">
+                  <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs text-gray-400 font-bold uppercase tracking-wider animate-pulse">Cargando Texto...</p>
+                </div>
+              ) : viewerDoc.type === 'video' ? (
+                activeViewerTab === 'content' ? (
+                  <div className="w-full h-full flex flex-col gap-4">
+                    <div 
+                      className="w-full aspect-video rounded-xl overflow-hidden shadow-lg bg-black flex items-center justify-center [&>iframe]:w-full [&>iframe]:h-full" 
+                      dangerouslySetInnerHTML={{ __html: viewerDoc.source || '' }} 
+                    />
+                  </div>
+                ) : (
+                  <div className="w-full flex flex-col gap-3 h-full">
+                    <div className="flex justify-between items-center select-none">
+                      <p className="text-xs text-gray-500 font-bold">Transcripción del Video</p>
+                      {me?.role !== 'user' && !editingTranscript && (
+                        <div className="flex gap-2">
+                          <input type="file" ref={transcriptFileRef} onChange={handleUploadTranscript} accept=".txt,.pdf,.doc,.docx,.md" className="hidden" />
+                          <button 
+                            onClick={() => transcriptFileRef.current?.click()}
+                            disabled={transcriptUploading}
+                            className="bg-gray-100 hover:bg-gray-200 text-gray-700 text-[10px] font-bold px-2 py-1 rounded transition-colors disabled:opacity-50"
+                          >
+                            {transcriptUploading ? 'Subiendo...' : '📄 Subir Archivo'}
+                          </button>
+                          <button 
+                            onClick={() => { setTranscriptDraft(viewerText); setEditingTranscript(true); }}
+                            className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded transition-colors"
+                          >
+                            ✏️ Editar Manual
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    {editingTranscript ? (
+                      <div className="flex flex-col h-full gap-2">
+                        <textarea
+                          value={transcriptDraft}
+                          onChange={e => setTranscriptDraft(e.target.value)}
+                          className="flex-1 w-full border border-gray-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none font-sans"
+                          placeholder="Pegá la transcripción acá para que la IA la procese..."
+                        />
+                        <div className="flex justify-end gap-2 shrink-0">
+                          <button onClick={() => setEditingTranscript(false)} className="text-xs font-bold text-gray-500 hover:text-gray-700 px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200">Cancelar</button>
+                          <button onClick={handleSaveTranscript} disabled={transcriptSaving} className="text-xs font-bold text-white px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
+                            {transcriptSaving ? 'Guardando...' : 'Guardar y Procesar'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-4 border border-gray-200 rounded-xl bg-white shadow-sm flex-1 overflow-y-auto whitespace-pre-wrap text-sm text-gray-700 leading-relaxed font-serif">
+                        {viewerText ? renderViewerPageContent(viewerText, viewerSearch) : <span className="text-gray-400 italic">No hay transcripción disponible. Podés editar para agregarla.</span>}
+                      </div>
+                    )}
+                  </div>
+                )
+              ) : (
+                viewerPages.map((page, i) => (
+                  <div
+                    key={i}
+                    id={`viewer-page-${page.pageNumber || 1}`}
+                    className={`p-4 border rounded-xl space-y-2.5 transition-all select-text ${viewerHighlightPage === page.pageNumber ? 'border-indigo-400 bg-indigo-50/20 shadow-md ring-2 ring-indigo-500/20' : 'border-gray-200 bg-white shadow-sm'}`}
+                  >
+                    <div className="flex items-center justify-between border-b border-gray-50 pb-1.5 select-none">
+                      <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                        Página {page.pageNumber || 1}
+                      </span>
+                      {viewerHighlightPage === page.pageNumber && (
+                        <span className="text-[9px] font-bold bg-indigo-100 text-indigo-700 uppercase px-1.5 py-0.5 rounded">
+                          Referencia Citada
+                        </span>
+                      )}
+                    </div>
+                    {renderViewerPageContent(page.text, viewerSearch)}
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* LMS Section at the bottom of the viewer */}
+            {aiAssistantEnabled && (
+              <div className="p-4 border-t border-gray-150 bg-gray-50/50 space-y-3 select-none shrink-0">
+                <div className="flex items-start gap-2.5 bg-white border border-gray-200 rounded-xl p-3 shadow-sm">
+                  <input
+                    type="checkbox"
+                    id="mark_as_read"
+                    checked={!!userProgress[viewerDoc.id]?.read_checked}
+                    onChange={async (e) => {
+                      const checked = e.target.checked;
+                      try {
+                        await markDocumentRead(viewerDoc.id, checked);
+                        setUserProgress(prev => ({
+                          ...prev,
+                          [viewerDoc.id]: {
+                            ...(prev[viewerDoc.id] || { document_id: viewerDoc.id, quiz_passed: false, score: null, completed_at: null }),
+                            read_checked: checked
+                          }
+                        }));
+                      } catch (err: any) {
+                        alert(err.message || 'Error al actualizar lectura.');
+                      }
+                    }}
+                    className="mt-0.5 w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                  />
+                  <div 
+                    className="flex flex-col cursor-pointer" 
+                    onClick={async () => {
+                      const nextVal = !userProgress[viewerDoc.id]?.read_checked;
+                      try {
+                        await markDocumentRead(viewerDoc.id, nextVal);
+                        setUserProgress(prev => ({
+                          ...prev,
+                          [viewerDoc.id]: {
+                            ...(prev[viewerDoc.id] || { document_id: viewerDoc.id, quiz_passed: false, score: null, completed_at: null }),
+                            read_checked: nextVal
+                          }
+                        }));
+                      } catch (err: any) {
+                        alert(err.message || 'Error al actualizar lectura.');
+                      }
+                    }}
+                  >
+                    <span className="text-xs font-bold text-gray-800">He completado la lectura</span>
+                    <span className="text-[9px] text-gray-400 font-semibold uppercase leading-tight mt-0.5">Activar el cuestionario de evaluación</span>
+                  </div>
+                </div>
+
+                {(() => {
+                  if (!viewerDoc.folder_id) return null;
+                  const folderDocs = docs.filter(d => d.folder_id === viewerDoc.folder_id);
+                  const isLastDoc = folderDocs.length > 0 && folderDocs[folderDocs.length - 1].id === viewerDoc.id;
+                  const folder = folders.find(f => f.id === viewerDoc.folder_id);
+                  if (!isLastDoc || !folder?.quiz_enabled) return null;
+
+                  const folderProg = userFolderProgress[folder.id];
+                  
+                  if (userProgress[viewerDoc.id]?.read_checked && !folderProg?.quiz_passed) {
+                    return (
+                      <button
+                        onClick={() => handleLaunchQuiz(folder.id)}
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-xl py-2.5 text-xs tracking-wider uppercase transition-all shadow-md shadow-indigo-100 flex items-center justify-center gap-1.5 animate-pulse"
+                      >
+                        📝 Hacer Cuestionario Final de Carpeta
+                      </button>
+                    );
+                  }
+                  
+                  if (folderProg?.quiz_passed) {
+                    return (
+                      <div className="bg-green-50 border border-green-150 rounded-xl p-3 flex items-center justify-center gap-1.5 text-green-700 text-xs font-bold select-none">
+                        <span>✅ Cuestionario Aprobado ({folderProg.score || 3}/3)</span>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+              </div>
+            )}
+          </main>
+        )}
+        {/* Draggable Divider */}
+        {viewerDoc && (
+          <div 
+            className="w-1.5 bg-gray-200 hover:bg-indigo-400 cursor-col-resize z-20 flex-shrink-0 transition-colors"
+            onMouseDown={(e) => {
+              const startX = e.clientX;
+              const startWidth = chatWidth;
+              const onMouseMove = (moveEvent: MouseEvent) => {
+                const deltaX = startX - moveEvent.clientX; 
+                setChatWidth(Math.max(300, Math.min(startWidth + deltaX, window.innerWidth - 400)));
+              };
+              const onMouseUp = () => {
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+              };
+              document.addEventListener('mousemove', onMouseMove);
+              document.addEventListener('mouseup', onMouseUp);
+            }}
+          />
+        )}
+{/* ── Center: Chat Dialogue ─────────────────────────────────────────── */}
+        <aside className="flex flex-col overflow-hidden bg-white z-0 border-l border-gray-200" style={{ width: viewerDoc ? `${chatWidth}px` : '100%', flex: viewerDoc ? 'none' : '1' }}>
           
           {/* Chat Toolbar: Conversation switcher dropdown */}
           <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between shadow-sm select-none">
@@ -1919,234 +2166,9 @@ export default function NotebookPage() {
               Enter para enviar · Shift+Enter para nueva línea
             </p>
           </div>
-        </main>
+        </aside>
 
-        {/* ── Right Panel: Document Viewer (SlideDrawer) ─────────────────────── */}
-        {viewerDoc && (
-          <aside className="w-96 bg-white border-l border-gray-200 flex flex-col flex-shrink-0 z-30 shadow-2xl animate-slide-left relative select-text h-full">
-            
-            {/* Viewer Header */}
-            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
-              <div className="min-w-0">
-                <h3 className="font-bold text-gray-900 truncate text-sm sm:text-base" title={viewerDoc.name}>
-                  👁️ Visor: {viewerDoc.name}
-                </h3>
-                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Modo lectura integrada</p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {viewerDoc.source && viewerDoc.source.startsWith('http') && (
-                  <button
-                    onClick={() => window.open(viewerDoc.source || '', '_blank')}
-                    className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 select-none"
-                    title="Abrir el archivo original en una pestaña nueva"
-                  >
-                    <span>📄 Abrir original</span>
-                  </button>
-                )}
-                <button onClick={() => setViewerDoc(null)} className="text-gray-400 hover:text-gray-600 transition-colors p-1">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            {/* Viewer Tabs for Video */}
-            {viewerDoc?.type === 'video' && (
-              <div className="flex border-b border-gray-100 bg-white select-none">
-                <button 
-                  onClick={() => setActiveViewerTab('content')}
-                  className={`flex-1 py-2 text-xs font-bold transition-colors ${activeViewerTab === 'content' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-400 hover:text-gray-600'}`}
-                >
-                  🎥 Reproductor
-                </button>
-                <button 
-                  onClick={() => setActiveViewerTab('transcript')}
-                  className={`flex-1 py-2 text-xs font-bold transition-colors ${activeViewerTab === 'transcript' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-400 hover:text-gray-600'}`}
-                >
-                  📝 Transcripción
-                </button>
-              </div>
-            )}
-
-            {/* Viewer Search Bar */}
-            {viewerDoc?.type !== 'video' || activeViewerTab === 'transcript' ? (
-              <div className="p-3 border-b border-gray-100">
-                <input
-                  type="text"
-                  value={viewerSearch}
-                  onChange={e => setViewerSearch(e.target.value)}
-                  placeholder="Buscar términos en este documento..."
-                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-            ) : null}
-
-            {/* Viewer Content list */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-6 select-text bg-gray-50/10">
-              {viewerLoading ? (
-                <div className="flex flex-col items-center justify-center h-full space-y-3 select-none">
-                  <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-                  <p className="text-xs text-gray-400 font-bold uppercase tracking-wider animate-pulse">Cargando Texto...</p>
-                </div>
-              ) : viewerDoc.type === 'video' ? (
-                activeViewerTab === 'content' ? (
-                  <div className="w-full h-full flex flex-col gap-4">
-                    <div 
-                      className="w-full aspect-video rounded-xl overflow-hidden shadow-lg bg-black flex items-center justify-center [&>iframe]:w-full [&>iframe]:h-full" 
-                      dangerouslySetInnerHTML={{ __html: viewerDoc.source || '' }} 
-                    />
-                  </div>
-                ) : (
-                  <div className="w-full flex flex-col gap-3 h-full">
-                    <div className="flex justify-between items-center select-none">
-                      <p className="text-xs text-gray-500 font-bold">Transcripción del Video</p>
-                      {me?.role !== 'user' && !editingTranscript && (
-                        <div className="flex gap-2">
-                          <input type="file" ref={transcriptFileRef} onChange={handleUploadTranscript} accept=".txt,.pdf,.doc,.docx,.md" className="hidden" />
-                          <button 
-                            onClick={() => transcriptFileRef.current?.click()}
-                            disabled={transcriptUploading}
-                            className="bg-gray-100 hover:bg-gray-200 text-gray-700 text-[10px] font-bold px-2 py-1 rounded transition-colors disabled:opacity-50"
-                          >
-                            {transcriptUploading ? 'Subiendo...' : '📄 Subir Archivo'}
-                          </button>
-                          <button 
-                            onClick={() => { setTranscriptDraft(viewerText); setEditingTranscript(true); }}
-                            className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded transition-colors"
-                          >
-                            ✏️ Editar Manual
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    {editingTranscript ? (
-                      <div className="flex flex-col h-full gap-2">
-                        <textarea
-                          value={transcriptDraft}
-                          onChange={e => setTranscriptDraft(e.target.value)}
-                          className="flex-1 w-full border border-gray-300 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none font-sans"
-                          placeholder="Pegá la transcripción acá para que la IA la procese..."
-                        />
-                        <div className="flex justify-end gap-2 shrink-0">
-                          <button onClick={() => setEditingTranscript(false)} className="text-xs font-bold text-gray-500 hover:text-gray-700 px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200">Cancelar</button>
-                          <button onClick={handleSaveTranscript} disabled={transcriptSaving} className="text-xs font-bold text-white px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
-                            {transcriptSaving ? 'Guardando...' : 'Guardar y Procesar'}
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="p-4 border border-gray-200 rounded-xl bg-white shadow-sm flex-1 overflow-y-auto whitespace-pre-wrap text-sm text-gray-700 leading-relaxed font-serif">
-                        {viewerText ? renderViewerPageContent(viewerText, viewerSearch) : <span className="text-gray-400 italic">No hay transcripción disponible. Podés editar para agregarla.</span>}
-                      </div>
-                    )}
-                  </div>
-                )
-              ) : (
-                viewerPages.map((page, i) => (
-                  <div
-                    key={i}
-                    id={`viewer-page-${page.pageNumber || 1}`}
-                    className={`p-4 border rounded-xl space-y-2.5 transition-all select-text ${viewerHighlightPage === page.pageNumber ? 'border-indigo-400 bg-indigo-50/20 shadow-md ring-2 ring-indigo-500/20' : 'border-gray-200 bg-white shadow-sm'}`}
-                  >
-                    <div className="flex items-center justify-between border-b border-gray-50 pb-1.5 select-none">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
-                        Página {page.pageNumber || 1}
-                      </span>
-                      {viewerHighlightPage === page.pageNumber && (
-                        <span className="text-[9px] font-bold bg-indigo-100 text-indigo-700 uppercase px-1.5 py-0.5 rounded">
-                          Referencia Citada
-                        </span>
-                      )}
-                    </div>
-                    {renderViewerPageContent(page.text, viewerSearch)}
-                  </div>
-                ))
-              )}
-            </div>
-
-            {/* LMS Section at the bottom of the viewer */}
-            {aiAssistantEnabled && (
-              <div className="p-4 border-t border-gray-150 bg-gray-50/50 space-y-3 select-none shrink-0">
-                <div className="flex items-start gap-2.5 bg-white border border-gray-200 rounded-xl p-3 shadow-sm">
-                  <input
-                    type="checkbox"
-                    id="mark_as_read"
-                    checked={!!userProgress[viewerDoc.id]?.read_checked}
-                    onChange={async (e) => {
-                      const checked = e.target.checked;
-                      try {
-                        await markDocumentRead(viewerDoc.id, checked);
-                        setUserProgress(prev => ({
-                          ...prev,
-                          [viewerDoc.id]: {
-                            ...(prev[viewerDoc.id] || { document_id: viewerDoc.id, quiz_passed: false, score: null, completed_at: null }),
-                            read_checked: checked
-                          }
-                        }));
-                      } catch (err: any) {
-                        alert(err.message || 'Error al actualizar lectura.');
-                      }
-                    }}
-                    className="mt-0.5 w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-                  />
-                  <div 
-                    className="flex flex-col cursor-pointer" 
-                    onClick={async () => {
-                      const nextVal = !userProgress[viewerDoc.id]?.read_checked;
-                      try {
-                        await markDocumentRead(viewerDoc.id, nextVal);
-                        setUserProgress(prev => ({
-                          ...prev,
-                          [viewerDoc.id]: {
-                            ...(prev[viewerDoc.id] || { document_id: viewerDoc.id, quiz_passed: false, score: null, completed_at: null }),
-                            read_checked: nextVal
-                          }
-                        }));
-                      } catch (err: any) {
-                        alert(err.message || 'Error al actualizar lectura.');
-                      }
-                    }}
-                  >
-                    <span className="text-xs font-bold text-gray-800">He completado la lectura</span>
-                    <span className="text-[9px] text-gray-400 font-semibold uppercase leading-tight mt-0.5">Activar el cuestionario de evaluación</span>
-                  </div>
-                </div>
-
-                {(() => {
-                  if (!viewerDoc.folder_id) return null;
-                  const folderDocs = docs.filter(d => d.folder_id === viewerDoc.folder_id);
-                  const isLastDoc = folderDocs.length > 0 && folderDocs[folderDocs.length - 1].id === viewerDoc.id;
-                  const folder = folders.find(f => f.id === viewerDoc.folder_id);
-                  if (!isLastDoc || !folder?.quiz_enabled) return null;
-
-                  const folderProg = userFolderProgress[folder.id];
-                  
-                  if (userProgress[viewerDoc.id]?.read_checked && !folderProg?.quiz_passed) {
-                    return (
-                      <button
-                        onClick={() => handleLaunchQuiz(folder.id)}
-                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-xl py-2.5 text-xs tracking-wider uppercase transition-all shadow-md shadow-indigo-100 flex items-center justify-center gap-1.5 animate-pulse"
-                      >
-                        📝 Hacer Cuestionario Final de Carpeta
-                      </button>
-                    );
-                  }
-                  
-                  if (folderProg?.quiz_passed) {
-                    return (
-                      <div className="bg-green-50 border border-green-150 rounded-xl p-3 flex items-center justify-center gap-1.5 text-green-700 text-xs font-bold select-none">
-                        <span>✅ Cuestionario Aprobado ({folderProg.score || 3}/3)</span>
-                      </div>
-                    );
-                  }
-                  return null;
-                })()}
-              </div>
-            )}
-          </aside>
-        )}
+        
       </div>
 
       {/* ─── Profile Modal ──────────────────────────────────────────────────── */}
