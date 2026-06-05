@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  getDocuments, getDocument, uploadDocument, ingestUrl, ingestVideo, updateVideoTranscription, deleteDocument,
+  getDocuments, getDocument, uploadDocument, ingestUrl, ingestVideo, updateVideoTranscription, uploadVideoTranscriptionFile, deleteDocument,
   getConversations, getMessages, sendChat,
   searchUsers, getNotebookUsers, addNotebookUser, removeNotebookUser, createInvitation, changePassword,
   getNotebookProgress, markDocumentRead, getFolderQuiz, submitFolderQuiz, getFinalExam, submitFinalExam,
@@ -91,6 +91,8 @@ export default function NotebookPage() {
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [transcriptDraft, setTranscriptDraft] = useState('');
   const [transcriptSaving, setTranscriptSaving] = useState(false);
+  const transcriptFileRef = useRef<HTMLInputElement>(null);
+  const [transcriptUploading, setTranscriptUploading] = useState(false);
 
   // Citation Detail Modal
   const [activeCitation, setActiveCitation] = useState<Source | null>(null);
@@ -669,6 +671,24 @@ export default function NotebookPage() {
       alert(err.message || 'Error al guardar la transcripción');
     } finally {
       setTranscriptSaving(false);
+    }
+  }
+
+  async function handleUploadTranscript(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !viewerDoc) return;
+    setTranscriptUploading(true);
+    try {
+      await uploadVideoTranscriptionFile(viewerDoc.id, file);
+      // Recargar el documento para ver la transcripción actualizada
+      const res = await getDocument(viewerDoc.id);
+      setViewerText(res.document.raw_text || '');
+      setDocs(prev => prev.map(d => d.id === viewerDoc.id ? { ...d, chunk_count: 1 } : d));
+    } catch (err: any) {
+      alert(err.message || 'Error al subir el archivo de transcripción');
+    } finally {
+      setTranscriptUploading(false);
+      if (transcriptFileRef.current) transcriptFileRef.current.value = '';
     }
   }
 
@@ -1983,12 +2003,22 @@ export default function NotebookPage() {
                     <div className="flex justify-between items-center select-none">
                       <p className="text-xs text-gray-500 font-bold">Transcripción del Video</p>
                       {me?.role !== 'user' && !editingTranscript && (
-                        <button 
-                          onClick={() => { setTranscriptDraft(viewerText); setEditingTranscript(true); }}
-                          className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded transition-colors"
-                        >
-                          ✏️ Editar Transcripción
-                        </button>
+                        <div className="flex gap-2">
+                          <input type="file" ref={transcriptFileRef} onChange={handleUploadTranscript} accept=".txt,.pdf,.doc,.docx,.md" className="hidden" />
+                          <button 
+                            onClick={() => transcriptFileRef.current?.click()}
+                            disabled={transcriptUploading}
+                            className="bg-gray-100 hover:bg-gray-200 text-gray-700 text-[10px] font-bold px-2 py-1 rounded transition-colors disabled:opacity-50"
+                          >
+                            {transcriptUploading ? 'Subiendo...' : '📄 Subir Archivo'}
+                          </button>
+                          <button 
+                            onClick={() => { setTranscriptDraft(viewerText); setEditingTranscript(true); }}
+                            className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded transition-colors"
+                          >
+                            ✏️ Editar Manual
+                          </button>
+                        </div>
                       )}
                     </div>
                     {editingTranscript ? (

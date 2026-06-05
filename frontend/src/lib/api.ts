@@ -241,6 +241,30 @@ export async function updateVideoTranscription(docId: number, transcription: str
   });
 }
 
+export async function uploadVideoTranscriptionFile(docId: number, file: File) {
+  return new Promise<{ ok: boolean }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const t = token();
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        const body = JSON.parse(xhr.responseText ?? '{}');
+        reject(new Error(body.error ?? `HTTP ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Error de red'));
+
+    const form = new FormData();
+    form.append('file', file);
+
+    xhr.open('POST', `/api/documents/${docId}/transcription/file`);
+    if (t) xhr.setRequestHeader('X-Session-Token', t);
+    xhr.send(form);
+  });
+}
+
 export async function deleteDocument(id: number) {
   return request(`/api/documents/${id}`, { method: 'DELETE' });
 }
