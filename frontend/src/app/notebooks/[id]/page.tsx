@@ -1352,7 +1352,7 @@ export default function NotebookPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
             </svg>
           </button>
-          <img src="/logoDocChat.png" alt="DocChat Logo" className="h-10 w-auto object-contain" />
+          <img src="/logoDocChat.png" alt="DocChat Logo" className="h-14 w-auto object-contain" />
         </div>
 
         <div className="flex items-center gap-3">
