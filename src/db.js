@@ -340,11 +340,11 @@ async function updateDocumentData(id, { name, content_url, transcription, chunk_
     values.push(name);
   }
   if (content_url !== undefined) {
-    updates.push(`content_url = $${idx++}`);
+    updates.push(`source = $${idx++}`);
     values.push(content_url);
   }
   if (transcription !== undefined) {
-    updates.push(`transcription = $${idx++}`);
+    updates.push(`raw_text = $${idx++}`);
     values.push(transcription);
   }
   if (chunk_count !== undefined) {

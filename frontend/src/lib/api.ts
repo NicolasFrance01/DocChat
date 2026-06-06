@@ -277,29 +277,30 @@ export async function renameDocument(id: number, name: string) {
 }
 
 export async function updateDocumentWithFile(id: number, name: string, file?: File | null, embedCode?: string) {
-  return new Promise<{ document: Document }>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    const t = token();
+  const form = new FormData();
+  form.append('name', name);
+  if (file) form.append('file', file);
+  if (embedCode) form.append('embed_code', embedCode);
 
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else {
-        const body = JSON.parse(xhr.responseText ?? '{}');
-        reject(new Error(body.error ?? `HTTP ${xhr.status}`));
-      }
-    };
-    xhr.onerror = () => reject(new Error('Error de red'));
-
-    const form = new FormData();
-    form.append('name', name);
-    if (file) form.append('file', file);
-    if (embedCode) form.append('embed_code', embedCode);
-
-    xhr.open('PUT', `/api/documents/${id}`);
-    if (t) xhr.setRequestHeader('X-Session-Token', t);
-    xhr.send(form);
+  const t = token();
+  const res = await fetch(`${BASE}/api/documents/${id}`, {
+    method: 'PUT',
+    headers: {
+      ...(t ? { 'X-Session-Token': t } : {}),
+    },
+    body: form,
   });
+
+  if (!res.ok) {
+    let body = {};
+    try {
+      body = await res.json();
+    } catch {
+      // Ignorar error de parseo si devuelve HTML
+    }
+    throw new Error((body as any).error ?? `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<{ document: Document }>;
 }
 
 // ─── Folders ──────────────────────────────────────────────────────────────────
