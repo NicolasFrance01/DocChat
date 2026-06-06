@@ -220,7 +220,14 @@ export async function uploadDocument(
     const form = new FormData();
     form.append('file', file);
 
-    const url = `/api/ingest/${notebookId}${folderId ? `?folder_id=${folderId}` : ''}`;
+    let url;
+    if (file.size > 4 * 1024 * 1024) {
+      // Archivos grandes saltan Vercel (límite 4.5MB) y van directo al backend
+      url = `${BASE}/api/notebooks/${notebookId}/documents${folderId ? `?folder_id=${folderId}` : ''}`;
+    } else {
+      url = `/api/ingest/${notebookId}${folderId ? `?folder_id=${folderId}` : ''}`;
+    }
+    
     xhr.open('POST', url);
     if (t) xhr.setRequestHeader('X-Session-Token', t);
     xhr.send(form);
