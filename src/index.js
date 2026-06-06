@@ -530,9 +530,28 @@ app.post('/api/notebooks/:id/documents', requireAuth, upload.single('file'), asy
     const { rawText, chunks } = await ingestFile(tmpPath, type);
     if (chunks.length === 0) return res.status(422).json({ error: 'No se pudo extraer texto del archivo' });
 
+    // Upload to Vercel Blob directly from backend
+    let fileUrl = req.file.originalname;
+    if (process.env.BLOB_READ_WRITE_TOKEN) {
+      try {
+        const { put } = require('@vercel/blob');
+        const fileData = require('fs').readFileSync(tmpPath);
+        const blob = await put(req.file.originalname, fileData, {
+          access: 'public',
+          token: process.env.BLOB_READ_WRITE_TOKEN,
+        });
+        fileUrl = blob.url;
+        console.log('[ingest] Subido exitosamente a Vercel Blob desde el backend:', fileUrl);
+      } catch (blobErr) {
+        console.error('[ingest] Falló la subida a Vercel Blob desde el backend:', blobErr);
+      }
+    } else {
+      console.warn('[ingest] BLOB_READ_WRITE_TOKEN no configurado en el backend. Usando fallback local.');
+    }
+
     // Save document record
     const folder_id = req.body.folder_id || req.query.folder_id;
-    const doc = await db.createDocument(notebook.id, req.file.originalname, type, req.file.originalname, rawText, folder_id ? Number(folder_id) : null);
+    const doc = await db.createDocument(notebook.id, req.file.originalname, type, fileUrl, rawText, folder_id ? Number(folder_id) : null);
     await db.logActivity(req.user.id, req.user.username, 'upload_document', notebook.id, notebook.name, doc.id, doc.name, `Archivo "${req.file.originalname}" subido`);
 
     // Generate embeddings and store chunks (async, respond 202 immediately to avoid timeout)

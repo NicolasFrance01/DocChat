@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
+    "@vercel/blob": "^2.4.0",
     "bcrypt": "^5.1.1",
     "cheerio": "^1.0.0-rc.12",
     "dotenv": "^16.4.7",
