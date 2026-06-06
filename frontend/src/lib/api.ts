@@ -202,10 +202,17 @@ export async function uploadDocument(
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch (err: any) {
+          reject(new Error(`Respuesta inválida del servidor: ${(xhr.responseText || '').substring(0, 50)}...`));
+        }
       } else {
-        const body = JSON.parse(xhr.responseText ?? '{}');
-        reject(new Error(body.error ?? `HTTP ${xhr.status}`));
+        let body: any = {};
+        try {
+          body = JSON.parse(xhr.responseText ?? '{}');
+        } catch {}
+        reject(new Error(body?.error ?? `Error HTTP ${xhr.status}: ${(xhr.responseText || '').substring(0, 50)}...`));
       }
     };
     xhr.onerror = () => reject(new Error('Error de red'));
