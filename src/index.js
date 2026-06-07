@@ -1236,7 +1236,10 @@ app.get('/api/notebooks/:id/folders/:folderId/quiz', requireAuth, async (req, re
       const folderDocs = documents.filter(d => d.folder_id === folderId);
       if (folderDocs.length === 0) return res.status(404).json({ error: 'Carpeta vacía' });
 
-      const combinedText = folderDocs.map(d => `Documento: ${d.name}\n${d.raw_text}`).join('\n\n--- \n\n');
+      const docsWithText = await Promise.all(
+        folderDocs.map(async d => await db.getDocumentById(d.id))
+      );
+      const combinedText = docsWithText.map(d => `Documento: ${d.name}\n${d.raw_text || '(Sin contenido de texto)'}`).join('\n\n--- \n\n');
       const { generateQuizForDocument } = require('./ai');
       const questions = await generateQuizForDocument(combinedText);
       await db.saveQuizForFolder(folderId, questions);

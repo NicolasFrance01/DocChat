@@ -320,7 +320,7 @@ ${text.slice(0, 25000)}
 
 async function generateFinalExam(documentsArray) {
   try {
-    const summaryText = documentsArray.map((d, i) => `Documento ${i+1}: ${d.name}\nResumen del contenido:\n${d.raw_text.slice(0, 4000)}`).join('\n\n');
+    const summaryText = documentsArray.map((d, i) => `Documento ${i+1}: ${d.name}\nResumen del contenido:\n${d.raw_text ? d.raw_text.slice(0, 4000) : '(Sin texto)'}`).join('\n\n');
 
     const prompt = `Genera un examen final integrador de entre 10 y 15 preguntas de opción múltiple (con opciones A, B, C, D) en base a todos los documentos del curso provistos a continuación.
 El examen debe evaluar la comprensión general de todo el notebook y ser integrador.
