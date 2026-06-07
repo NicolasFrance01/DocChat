@@ -70,7 +70,49 @@ export default function NotebookPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Edit & Delete Custom Modals
+  // Voice Recording State
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      if (recognitionRef.current) recognitionRef.current.stop();
+      setIsRecording(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('Tu navegador no soporta reconocimiento de voz. Usa Google Chrome o Microsoft Edge.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'es-ES';
+
+    // Capture input text at start of recording
+    const originalInput = input;
+
+    recognition.onstart = () => setIsRecording(true);
+    recognition.onerror = (e: any) => {
+      console.error('Speech error', e);
+      setIsRecording(false);
+    };
+    recognition.onend = () => setIsRecording(false);
+
+    recognition.onresult = (event: any) => {
+      let transcript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      setInput(originalInput + (originalInput && !originalInput.endsWith(' ') ? ' ' : '') + transcript);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
   const [editModalItem, setEditModalItem] = useState<{ id: number, type: 'document' | 'folder', docType?: string, currentName: string, embedCode?: string } | null>(null);
   const [editLoading, setEditLoading] = useState(false);
   const [editFile, setEditFile] = useState<File | null>(null);
@@ -1386,11 +1428,11 @@ export default function NotebookPage() {
       <div className="flex flex-1 overflow-hidden relative">
         
         {/* ── Left Sidebar: Documents & Checkboxes ────────────────────────────── */}
-        <aside className="w-72 bg-white border-r border-gray-200 flex flex-col flex-shrink-0 z-10">
+        <aside className="w-72 bg-white border-r border-gray-200 flex flex-col flex-shrink-0 z-10 overflow-y-auto">
           
           {/* Notebook Role Controls */}
           {me?.role !== 'user' && (
-            <div className="p-4 border-b border-gray-100 space-y-3 bg-gray-50/50">
+            <div className="p-4 border-b border-gray-100 space-y-3 bg-gray-50/50 flex-shrink-0">
               {notebookName && (
                 <div className="bg-indigo-600 text-white px-3 py-2.5 rounded-xl shadow-md shadow-indigo-100 text-center">
                   <h2 className="font-bold text-sm leading-tight line-clamp-2" title={notebookName}>{notebookName}</h2>
@@ -1481,7 +1523,7 @@ export default function NotebookPage() {
           )}
 
           {/* Documents Selection & List */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div className="flex-1 p-4 space-y-4">
             <div className="flex items-center justify-between select-none">
               <h3 className="font-bold text-xs text-gray-500 uppercase tracking-wider">Documentos ({docs.length})</h3>
               
@@ -2281,6 +2323,23 @@ export default function NotebookPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                   </svg>
                 )}
+              </button>
+              <button
+                onClick={toggleRecording}
+                className={`flex-shrink-0 w-11 h-11 rounded-xl flex items-center justify-center transition-all shadow-md ${
+                  isRecording 
+                    ? 'bg-red-500 hover:bg-red-600 text-white shadow-red-100 animate-pulse' 
+                    : 'bg-white border border-gray-200 text-gray-500 hover:text-indigo-600 hover:border-indigo-200 hover:bg-indigo-50 shadow-gray-100'
+                }`}
+                title={isRecording ? 'Detener grabación' : 'Hablar por micrófono'}
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  {isRecording ? (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                  ) : (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                  )}
+                </svg>
               </button>
             </div>
             <p className="text-[10px] text-gray-400 font-semibold mt-2 text-center uppercase tracking-wider select-none">
