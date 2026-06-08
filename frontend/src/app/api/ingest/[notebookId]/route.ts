@@ -7,6 +7,8 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? '';
 
 async function extractText(buffer: Buffer, filename: string): Promise<{ text: string; type: string }> {
   const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  let text = '';
+  let type = '';
 
   if (ext === 'pdf') {
     // Dynamic import avoids the pdf-parse test-file issue in Next.js
@@ -16,26 +18,31 @@ async function extractText(buffer: Buffer, filename: string): Promise<{ text: st
     const render_page = (pageData: any) => {
       return pageData.getTextContent()
         .then(function(textContent: any) {
-          let text = '';
+          let pageText = '';
           for (let item of textContent.items) {
-            text += item.str + ' ';
+            pageText += item.str + ' ';
           }
-          return `\n--- PAGE_BREAK_P_${pageData.pageIndex + 1} ---\n` + text;
+          return `\n--- PAGE_BREAK_P_${pageData.pageIndex + 1} ---\n` + pageText;
         });
     };
 
     const data = await pdfParse(buffer, { pagerender: render_page });
-    return { text: data.text, type: 'pdf' };
-  }
-
-  if (ext === 'docx' || ext === 'doc') {
+    text = data.text;
+    type = 'pdf';
+  } else if (ext === 'docx' || ext === 'doc') {
     const mammoth = await import('mammoth');
     const result = await mammoth.extractRawText({ buffer });
-    return { text: result.value, type: 'docx' };
+    text = result.value;
+    type = 'docx';
+  } else {
+    // txt / md — plain text
+    text = buffer.toString('utf8');
+    type = 'txt';
   }
 
-  // txt / md — plain text
-  return { text: buffer.toString('utf8'), type: 'txt' };
+  // Remove null bytes which crash PostgreSQL
+  text = text.replace(/\0/g, '');
+  return { text, type };
 }
 
 

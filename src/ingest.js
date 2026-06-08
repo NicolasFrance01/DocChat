@@ -148,14 +148,14 @@ async function ingestFile(filePath, type) {
     default:     throw new Error(`Unsupported file type: ${type}`);
   }
 
-  const cleanText = extracted.text.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  const cleanText = extracted.text.replace(/\0/g, '').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   const chunks = chunkText(cleanText);
   return { rawText: cleanText, chunks, pageCount: extracted.pageCount };
 }
 
 async function ingestUrl(url) {
   const extracted = await extractFromUrl(url);
-  const cleanText = extracted.text.replace(/\s+/g, ' ').trim();
+  const cleanText = extracted.text.replace(/\0/g, '').replace(/\s+/g, ' ').trim();
   const chunks = chunkText(cleanText);
   return { rawText: cleanText, chunks, title: extracted.title, pageCount: null };
 }
