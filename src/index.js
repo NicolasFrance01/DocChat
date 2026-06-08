@@ -732,7 +732,24 @@ app.put('/api/documents/:id', requireAuth, upload.single('file'), async (req, re
       const { rawText, chunks } = await ingestFile(tmpPath, type);
       await db.deleteChunksByDocument(doc.id);
       
-      updates.content_url = req.file.originalname;
+      // Upload to Vercel Blob directly from backend
+      let fileUrl = req.file.originalname;
+      if (process.env.BLOB_READ_WRITE_TOKEN) {
+        try {
+          const { put } = require('@vercel/blob');
+          const fileData = require('fs').readFileSync(tmpPath);
+          const blob = await put(req.file.originalname, fileData, {
+            access: 'public',
+            token: process.env.BLOB_READ_WRITE_TOKEN,
+          });
+          fileUrl = blob.url;
+          console.log('[ingest:update] Subido exitosamente a Vercel Blob desde el backend:', fileUrl);
+        } catch (blobErr) {
+          console.error('[ingest:update] Falló la subida a Vercel Blob desde el backend:', blobErr);
+        }
+      }
+
+      updates.content_url = fileUrl;
       updates.transcription = rawText;
       updates.chunk_count = chunks.length;
 
