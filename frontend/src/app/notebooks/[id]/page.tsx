@@ -1676,21 +1676,17 @@ export default function NotebookPage() {
                       const doc = item as Document;
                       const docIdx = documentOrder.indexOf(doc.id);
                       let isLocked = false;
-                      if (aiAssistantEnabled && docIdx > 0) {
-                        const prevDocId = documentOrder[docIdx - 1];
-                        const prevDoc = docs.find(d => d.id === prevDocId);
-                        const prevDocProgress = userProgress[prevDocId];
-                        
-                        if (!prevDocProgress?.read_checked) {
-                          isLocked = true;
-                        } else if (prevDoc && prevDoc.folder_id) {
-                          const prevFolderDocs = docs.filter(d => d.folder_id === prevDoc.folder_id);
-                          const lastDocInPrevFolder = prevFolderDocs[prevFolderDocs.length - 1];
-                          
-                          if (prevDoc.id === lastDocInPrevFolder?.id) {
+                      if (aiAssistantEnabled) {
+                        // Un doc está bloqueado si en el orden anterior hay una carpeta con quiz pendiente
+                        // y el doc actual NO pertenece a esa misma carpeta.
+                        for (let i = 0; i < docIdx; i++) {
+                          const prevDocId = documentOrder[i];
+                          const prevDoc = docs.find(d => d.id === prevDocId);
+                          if (prevDoc && prevDoc.folder_id && prevDoc.folder_id !== doc.folder_id) {
                             const prevFolder = folders.find(f => f.id === prevDoc.folder_id);
                             if (prevFolder?.quiz_enabled && !userFolderProgress[prevFolder.id]?.quiz_passed) {
                               isLocked = true;
+                              break;
                             }
                           }
                         }
@@ -1758,19 +1754,9 @@ export default function NotebookPage() {
                           {aiAssistantEnabled && (
                             <div className="mt-1.5 flex items-center justify-between border-t border-gray-100 pt-2 text-[10px] select-none font-bold uppercase tracking-wider">
                               {isLocked ? (
-                                <span className="text-gray-400">🔒 Bloqueado</span>
-                              ) : isPassed ? (
-                                <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded-lg flex items-center gap-1">✅ Aprobado</span>
+                                <span className="text-gray-400">🔒 Bloqueado (Completa el Quiz de la carpeta anterior)</span>
                               ) : isRead ? (
-                                <div className="w-full flex items-center justify-between gap-1">
-                                  <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded-lg">📖 Leído</span>
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); handleLaunchQuiz(doc.id); }}
-                                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold px-2.5 py-1 rounded-lg text-[9px] tracking-normal normal-case transition-all shadow-sm"
-                                  >
-                                    📝 Hacer Cuestionario
-                                  </button>
-                                </div>
+                                <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded-lg">📖 Leído</span>
                               ) : (
                                 <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg">📖 Pendiente de lectura</span>
                               )}
