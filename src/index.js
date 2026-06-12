@@ -1105,7 +1105,7 @@ app.post('/api/notebooks/:id/chat', requireAuth, async (req, res) => {
     const notebook = await db.getNotebookById(Number(req.params.id), req.user.id, req.user.role);
     if (!notebook) return res.status(404).json({ error: 'Notebook no encontrado' });
 
-    const { message, conversation_id, parent_id, document_ids } = req.body;
+    const { message, conversation_id, parent_id, document_ids, is_guided } = req.body;
     if (!message) return res.status(400).json({ error: 'Mensaje requerido' });
 
     // Get or create conversation
@@ -1118,7 +1118,7 @@ app.post('/api/notebooks/:id/chat', requireAuth, async (req, res) => {
       }
       if (!conversation) return res.status(404).json({ error: 'Conversación no encontrada' });
     } else {
-      conversation = await db.createConversation(notebook.id, req.user.id, message.slice(0, 80));
+      conversation = await db.createConversation(notebook.id, req.user.id, message.slice(0, 80), !!is_guided);
     }
 
     // Load context history resolving branches using parent_id tree traversal!
@@ -1173,6 +1173,7 @@ app.post('/api/notebooks/:id/chat', requireAuth, async (req, res) => {
       userMessage: message,
       history,
       progressSummary,
+      isGuided: conversation.is_guided,
       documentIds: document_ids, // Filter search chunks by active documents!
       onChunk: (delta) => {
         res.write(`data: ${JSON.stringify({ type: 'delta', content: delta })}\n\n`);

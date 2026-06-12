@@ -137,7 +137,7 @@ async function chat({ notebookId, userMessage, history = [], documentIds = null 
 
 // ─── Streaming version (SSE) ──────────────────────────────────────────────────
 
-async function chatStream({ notebookId, userMessage, history = [], documentIds = null, progressSummary = null, onChunk, onDone }) {
+async function chatStream({ notebookId, userMessage, history = [], documentIds = null, progressSummary = null, isGuided = false, onChunk, onDone }) {
   const recentHistory = history.slice(-12);
 
   let relevantChunks = [];
@@ -148,14 +148,35 @@ async function chatStream({ notebookId, userMessage, history = [], documentIds =
 
   let systemPrompt = relevantChunks.length > 0 ? SYSTEM_PROMPT_RAG : SYSTEM_PROMPT_FREE;
   
-  if (progressSummary) {
-    systemPrompt += `\n\n[CONTEXTO DE PROGRESO DEL ALUMNO]
-Eres un tutor guía. Tienes acceso al estado de lectura del alumno. Si el alumno te pregunta por dónde va, qué tiene que hacer a continuación o se muestra perdido, usa esta información para guiarle.
+  if (isGuided) {
+    systemPrompt = `Eres un Tutor Guía interactivo con IA. Tu objetivo es acompañar al alumno paso a paso a través del material de estudio, respetando el orden pedagógico.
+
+Reglas del Modo Guía:
+1. Debes presentarte, explicar qué eres y cómo funciona este modo (enseñanza estructurada, confirmación de comprensión, evaluaciones) y pedir confirmación para continuar, si es el inicio de la conversación.
+2. Basado en el progreso del alumno, indícale claramente cuál es el SIGUIENTE documento que debe leer. Enséñale o explícale los conceptos de ese documento basándote en los fragmentos relevantes.
+3. Al finalizar una explicación, pregúntale explícitamente si ha comprendido. 
+4. Si el alumno comprende, indícale que MARQUE EL CHECKBOX de "Leído" manualmente en la interfaz del documento.
+5. Si detectas que ha terminado los documentos de una carpeta que requiere Cuestionario, dile textualmente: "Es hora de tu evaluación. Haz clic en el botón de Cuestionario de la carpeta para comenzar" y que te avise cuando lo haya aprobado.
+6. Si el alumno no entiende algo, refuerza el concepto antes de avanzar.
+7. Responde siempre en el mismo idioma que el usuario.`;
+
+    if (progressSummary) {
+      systemPrompt += `\n\n[CONTEXTO DE PROGRESO DEL ALUMNO]
 - Documentos leídos: ${progressSummary.readDocuments.length > 0 ? progressSummary.readDocuments.join(', ') : 'Ninguno'}
 - Documentos pendientes por leer: ${progressSummary.unreadDocuments.length > 0 ? progressSummary.unreadDocuments.join(', ') : 'Ninguno (ha terminado todo)'}
-- Carpetas que requieren Cuestionario para avanzar: ${progressSummary.folderProgress.filter(f => f.quizEnabled).map(f => `${f.name} (Aprobado: ${f.quizPassed ? 'Sí' : 'No'})`).join(', ') || 'Ninguna'}
+- Carpetas con Cuestionario: ${progressSummary.folderProgress.filter(f => f.quizEnabled).map(f => `${f.name} (Aprobado: ${f.quizPassed ? 'Sí' : 'No'})`).join(', ') || 'Ninguna'}
 
-Recuerda ser empático y claro al decirle al alumno qué documento exacto debe leer a continuación (típicamente el primer documento pendiente).`;
+Usa esta información para saber exactamente qué documento toca explicar ahora (el primero de los pendientes).`;
+    }
+  } else {
+    // Modo libre/RAG normal
+    if (progressSummary) {
+      systemPrompt += `\n\n[CONTEXTO DE PROGRESO DEL ALUMNO]
+Eres un asistente interactivo. Si el alumno te pregunta por su progreso, usa esta info:
+- Documentos leídos: ${progressSummary.readDocuments.length > 0 ? progressSummary.readDocuments.join(', ') : 'Ninguno'}
+- Documentos pendientes: ${progressSummary.unreadDocuments.length > 0 ? progressSummary.unreadDocuments.join(', ') : 'Ninguno'}
+- Carpetas con Cuestionario: ${progressSummary.folderProgress.filter(f => f.quizEnabled).map(f => `${f.name} (Aprobado: ${f.quizPassed ? 'Sí' : 'No'})`).join(', ') || 'Ninguna'}`;
+    }
   }
 
   const userContent = buildUserContent(userMessage, relevantChunks);

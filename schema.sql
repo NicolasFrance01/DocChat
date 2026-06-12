@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
   user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   title       TEXT,
+  is_guided   BOOLEAN NOT NULL DEFAULT FALSE,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

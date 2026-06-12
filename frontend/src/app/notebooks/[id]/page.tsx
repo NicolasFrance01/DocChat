@@ -54,6 +54,7 @@ export default function NotebookPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [convsLoading, setConvsLoading] = useState(true);
   const [conversationId, setConversationId] = useState<number | null>(null);
+  const [isGuidedMode, setIsGuidedMode] = useState(true);
 
   // Chat tree branching state
   const [allMessages, setAllMessages] = useState<Message[]>([]); // holds all dialogue nodes
@@ -1163,11 +1164,13 @@ export default function NotebookPage() {
   }
 
   // ── Send chat (SSE streaming) ───────────────────────────────────────────────
-  async function handleSend(textInput?: string, parentIdOverride?: number | null) {
+  async function handleSend(textInput?: string, parentIdOverride?: number | null, overrideIsGuided?: boolean) {
     const text = (textInput ?? input).trim();
     if (!text || streaming) return;
     if (!textInput) setInput('');
     setSources([]);
+
+    const activeIsGuided = overrideIsGuided !== undefined ? overrideIsGuided : isGuidedMode;
 
     let activeConvId = conversationId;
 
@@ -1195,7 +1198,7 @@ export default function NotebookPage() {
     setStreaming(true);
     setStreamBuffer('');
 
-    await sendChat(notebookId, text, activeConvId, activeParentId, activeDocIds.length > 0 ? activeDocIds : null, {
+    await sendChat(notebookId, text, activeConvId, activeParentId, activeDocIds.length > 0 ? activeDocIds : null, activeIsGuided, {
       onMeta: (cid) => {
         setConversationId(cid);
         activeConvId = cid;
@@ -1284,13 +1287,18 @@ export default function NotebookPage() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   }
 
-  function newConversation() {
+  function newConversation(triggerGuidedIntro = false) {
     setConversationId(null);
     setAllMessages([]);
     setRenderedMessages([]);
     setSelectedVersions({});
     setSources([]);
     setStreamBuffer('');
+    if (triggerGuidedIntro && isGuidedMode) {
+      setTimeout(() => {
+        handleSend('¡Hola! He iniciado el Modo Guía. Por favor explícame de qué trata y cómo funciona.', null, true);
+      }, 50);
+    }
   }
 
   // ── Custom Safe Markdown Renderer ──────────────────────────────────────────
@@ -2061,23 +2069,35 @@ export default function NotebookPage() {
                 onChange={e => {
                   const val = e.target.value;
                   if (val) selectConversation(Number(val));
-                  else newConversation();
+                  else newConversation(true);
                 }}
                 className="border border-gray-300 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white font-semibold text-gray-700 max-w-[200px]"
               >
                 <option value="">+ Nueva Conversación</option>
                 {conversations.map(c => (
                   <option key={c.id} value={c.id}>
-                    💬 {c.title || `Chat #${c.id}`}
+                    {c.is_guided ? '🎓' : '💬'} {c.title || `Chat #${c.id}`}
                   </option>
                 ))}
               </select>
               {convsLoading && <div className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />}
+              
+              {!conversationId && (
+                <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1.5 rounded-lg border border-indigo-100 transition-colors hover:bg-indigo-100">
+                  <input
+                    type="checkbox"
+                    checked={isGuidedMode}
+                    onChange={(e) => setIsGuidedMode(e.target.checked)}
+                    className="w-3.5 h-3.5 text-indigo-600 rounded border-indigo-300 focus:ring-indigo-500"
+                  />
+                  <span>🎓 GUÍA con IA</span>
+                </label>
+              )}
             </div>
 
             {renderedMessages.length > 0 && (
               <button
-                onClick={newConversation}
+                onClick={() => newConversation(true)}
                 className="text-xs text-indigo-600 hover:text-indigo-800 font-bold transition-colors"
               >
                 + Limpiar Pantalla

@@ -39,6 +39,7 @@ async function initDb() {
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES messages(id) ON DELETE CASCADE;`).catch(() => {});
   await pool.query(`ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS ai_assistant_enabled BOOLEAN NOT NULL DEFAULT FALSE;`).catch(() => {});
   await pool.query(`ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS document_order INTEGER[] DEFAULT '{}';`).catch(() => {});
+  await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_guided BOOLEAN NOT NULL DEFAULT FALSE;`).catch(() => {});
 
 
   // Seed admin if not exists
@@ -438,10 +439,10 @@ async function getConversationById(id, userId) {
   return rows[0] || null;
 }
 
-async function createConversation(notebookId, userId, title = null) {
+async function createConversation(notebookId, userId, title = null, isGuided = false) {
   const { rows } = await pool.query(
-    'INSERT INTO conversations (notebook_id, user_id, title) VALUES ($1, $2, $3) RETURNING *',
-    [notebookId, userId, title]
+    'INSERT INTO conversations (notebook_id, user_id, title, is_guided) VALUES ($1, $2, $3, $4) RETURNING *',
+    [notebookId, userId, title, isGuided]
   );
   return rows[0];
 }

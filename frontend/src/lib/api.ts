@@ -387,6 +387,7 @@ export async function sendChat(
   conversationId: number | null,
   parentId: number | null,
   documentIds: number[] | null,
+  isGuided: boolean,
   callbacks: ChatCallbacks
 ) {
   const t = token();
@@ -396,7 +397,7 @@ export async function sendChat(
       'Content-Type': 'application/json',
       ...(t ? { 'X-Session-Token': t } : {}),
     },
-    body: JSON.stringify({ message, conversation_id: conversationId, parent_id: parentId, document_ids: documentIds }),
+    body: JSON.stringify({ message, conversation_id: conversationId, parent_id: parentId, document_ids: documentIds, is_guided: isGuided }),
   });
 
   if (!res.ok || !res.body) {
@@ -508,7 +509,7 @@ export interface NotebookUser { user_id: number; role: string; username: string;
 export interface Notebook { id: number; user_id: number; name: string; description: string | null; document_count: number; created_at: string; ai_assistant_enabled?: boolean; document_order?: number[]; }
 export interface Document { id: number; notebook_id: number; folder_id: number | null; name: string; type: string; source: string | null; chunk_count: number; sort_order: number; created_at: string; content_url?: string; transcription?: string; }
 export interface DocumentText extends Document { raw_text: string | null; }
-export interface Conversation { id: number; notebook_id: number; title: string | null; message_count: number; created_at: string; }
+export interface Conversation { id: number; notebook_id: number; title: string | null; message_count: number; is_guided: boolean; created_at: string; }
 export interface Message { id: number; conversation_id: number; role: 'user' | 'assistant'; content: string; sources: Source[] | null; parent_id: number | null; created_at: string; }
 export interface Source { chunk_id: number; document_id?: number; document_name: string; page_number: number | null; excerpt: string; similarity: number; folder_path?: string; }
 
